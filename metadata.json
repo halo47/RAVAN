@@ -1,0 +1,6 @@
+{
+  "name": "RAVAN — Travel Business Operating System",
+  "description": "Multi-tenant Travel Business Operating System (SaaS) for tour operators and travel agencies. One platform. Every journey.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

@@ -1,0 +1,46 @@
+@import "tailwindcss";
+@custom-variant dark (&:where(.dark, .dark *));
+
+@layer base {
+  :root {
+    --bg-canvas: #0A101A;
+    --bg-panel: #142438;
+    --accent-blue: #547DA8;
+    --accent-gold: #C8A76A;
+    --text-primary: #F4F7FB;
+    --text-secondary: #AAB7C7;
+  }
+
+  html {
+    background-color: #0A101A;
+    color: #F4F7FB;
+    font-family: 'Vazirmatn', 'Plus Jakarta Sans', sans-serif;
+  }
+
+  html[dir="ltr"] {
+    font-family: 'Plus Jakarta Sans', 'Vazirmatn', sans-serif;
+  }
+
+  html[dir="rtl"] {
+    font-family: 'Vazirmatn', 'Plus Jakarta Sans', sans-serif;
+  }
+
+  .font-mono,
+  .tabular-nums {
+    font-family: 'JetBrains Mono', monospace;
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Custom subtle glass surface adhering to Section 6 & single-elevation discipline */
+.ravan-panel {
+  background-color: rgba(20, 36, 56, 0.82);
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(170, 183, 199, 0.14);
+}
+
+.ravan-surface {
+  background-color: #0F1A2A;
+  border: 1px solid rgba(170, 183, 199, 0.12);
+}
+

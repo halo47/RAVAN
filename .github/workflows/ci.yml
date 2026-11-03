@@ -1,0 +1,39 @@
+name: RAVAN CI Quality Gate
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Lint, Test & Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run TypeScript strict typecheck
+        run: npm run lint
+
+      - name: Run unit & domain security tests
+        run: npm test
+
+      - name: Build production bundle
+        run: npm run build
+
+      - name: Security Audit (High/Critical)
+        run: npm audit --audit-level=high || true
