@@ -3,18 +3,23 @@
 
 @layer base {
   :root {
-    --bg-canvas: #0A101A;
-    --bg-panel: #142438;
+    --bg-canvas: #070B12;
+    --bg-panel: #101C2E;
+    --bg-elevated: #16263D;
     --accent-blue: #547DA8;
-    --accent-gold: #C8A76A;
+    --accent-gold: #D4B375;
+    --accent-gold-hover: #E2C58B;
     --text-primary: #F4F7FB;
-    --text-secondary: #AAB7C7;
+    --text-secondary: #9BA9BC;
   }
 
   html {
-    background-color: #0A101A;
+    background-color: #070B12;
     color: #F4F7FB;
     font-family: 'Vazirmatn', 'Plus Jakarta Sans', sans-serif;
+    scroll-behavior: smooth;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
   }
 
   html[dir="ltr"] {
@@ -32,15 +37,116 @@
   }
 }
 
-/* Custom subtle glass surface adhering to Section 6 & single-elevation discipline */
+/* Ambient Atmospheric Canvas */
+.ravan-canvas {
+  background-color: #070B12;
+  background-image:
+    radial-gradient(circle at 15% 0%, rgba(84, 125, 168, 0.14) 0%, transparent 45%),
+    radial-gradient(circle at 85% 10%, rgba(200, 167, 106, 0.10) 0%, transparent 40%),
+    radial-gradient(circle at 50% 100%, rgba(20, 36, 56, 0.5) 0%, transparent 60%);
+}
+
+/* Impeccable Glass & Surface Discipline */
 .ravan-panel {
-  background-color: rgba(20, 36, 56, 0.82);
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(170, 183, 199, 0.14);
+  background: linear-gradient(180deg, rgba(22, 38, 61, 0.78) 0%, rgba(14, 24, 39, 0.88) 100%);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  box-shadow:
+    0 20px 40px -15px rgba(0, 0, 0, 0.55),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
 }
 
 .ravan-surface {
-  background-color: #0F1A2A;
-  border: 1px solid rgba(170, 183, 199, 0.12);
+  background: linear-gradient(180deg, rgba(17, 29, 46, 0.72) 0%, rgba(11, 19, 31, 0.85) 100%);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(170, 183, 199, 0.11);
+  box-shadow:
+    0 10px 30px -12px rgba(0, 0, 0, 0.45),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.05);
 }
 
+.ravan-card-interactive {
+  transition: transform 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              border-color 0.28s cubic-bezier(0.22, 1, 0.36, 1),
+              box-shadow 0.28s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ravan-card-interactive:hover {
+  transform: translateY(-2px);
+  border-color: rgba(200, 167, 106, 0.38);
+  box-shadow:
+    0 22px 45px -16px rgba(0, 0, 0, 0.65),
+    0 0 25px -5px rgba(200, 167, 106, 0.12),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.12);
+}
+
+/* Tactile Inputs & Selects */
+.ravan-input {
+  background-color: rgba(7, 11, 18, 0.85);
+  border: 1px solid rgba(170, 183, 199, 0.18);
+  color: #F4F7FB;
+  transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ravan-input:focus {
+  outline: none;
+  border-color: #C8A76A;
+  box-shadow: 0 0 0 3px rgba(200, 167, 106, 0.16);
+  background-color: rgba(10, 16, 26, 0.98);
+}
+
+/* Primary Luxury Gold CTA */
+.ravan-btn-gold {
+  background: linear-gradient(135deg, #D8B97E 0%, #C19B58 100%);
+  color: #070B12;
+  font-weight: 700;
+  box-shadow:
+    0 8px 20px -6px rgba(200, 167, 106, 0.45),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.35);
+  transition: all 0.22s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ravan-btn-gold:hover:not(:disabled) {
+  background: linear-gradient(135deg, #E3C790 0%, #CCA764 100%);
+  transform: translateY(-1px);
+  box-shadow:
+    0 12px 26px -6px rgba(200, 167, 106, 0.6),
+    inset 0 1px 0 0 rgba(255, 255, 255, 0.45);
+}
+
+.ravan-btn-gold:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+/* Secondary Slate Button */
+.ravan-btn-secondary {
+  background: rgba(20, 36, 56, 0.75);
+  border: 1px solid rgba(170, 183, 199, 0.18);
+  color: #F4F7FB;
+  transition: all 0.2s cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.ravan-btn-secondary:hover:not(:disabled) {
+  background: rgba(30, 52, 80, 0.9);
+  border-color: rgba(200, 167, 106, 0.35);
+}
+
+/* Subtle Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #070B12;
+}
+
+::-webkit-scrollbar-thumb {
+  background: rgba(84, 125, 168, 0.35);
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: rgba(200, 167, 106, 0.55);
+}
