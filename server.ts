@@ -9,6 +9,7 @@ import {
   bookingPassengers,
   bookings,
   bookingStatusHistory,
+  coupons,
   customers,
   expenses,
   guides,
@@ -18,8 +19,13 @@ import {
   organizations,
   organizationSettings,
   payments,
+  platformPaymentMethods,
+  salesLeads,
+  subscriptionInvoices,
+  subscriptionPayments,
   subscriptionPlans,
   subscriptions,
+  supportTickets,
   tripPickupPoints,
   trips,
   users,
@@ -66,8 +72,65 @@ async function startServer() {
   app.use(express.json({ limit: '10mb' }));
 
   // ==========================================================================
-  // 1. PUBLIC CUSTOMER PORTAL ENDPOINTS (Strict Field Allowlist + Rate Limit)
+  // 1. PUBLIC ENDPOINTS (Single-Trip Registration, Company Page & SaaS Info)
   // ==========================================================================
+
+  app.get('/api/public/saas-info', rateLimit(60, 60_000), async (_req, res) => {
+    try {
+      const plans = await ensureSubscriptionPlans();
+      const methods = await db
+        .select()
+        .from(platformPaymentMethods)
+        .where(eq(platformPaymentMethods.isEnabled, true));
+      res.json({
+        plans: plans.filter((p) => p.isActive),
+        paymentMethods: methods,
+      });
+    } catch (error) {
+      console.error('GET /api/public/saas-info failed:', error);
+      res.status(500).json({ error: 'Unable to load SaaS plans.' });
+    }
+  });
+
+  app.post('/api/public/demo-request', rateLimit(15, 60_000), async (req, res) => {
+    try {
+      const contactName = String(req.body?.contactName || '').trim();
+      const companyName = String(req.body?.companyName || '').trim();
+      const phone = normalizePhoneNumber(String(req.body?.phone || ''));
+      const email = String(req.body?.email || '').trim();
+      const city = String(req.body?.city || 'Erbil').trim();
+      const interestedPlan = String(req.body?.interestedPlan || 'professional').trim();
+      const notes = String(req.body?.notes || '').trim();
+
+      if (!contactName || !companyName || !phone) {
+        return res
+          .status(400)
+          .json({ error: 'Contact name, company name, and valid phone are required.' });
+      }
+
+      const [lead] = await db
+        .insert(salesLeads)
+        .values({
+          contactName,
+          companyName,
+          phone,
+          email,
+          city,
+          interestedPlan,
+          leadSource: 'Public Website Demo Request',
+          status: 'new',
+          estimatedDealValue: interestedPlan === 'business' ? 100000 : 50000,
+          currency: 'IQD',
+          notes,
+        })
+        .returning();
+
+      res.status(201).json({ lead });
+    } catch (error) {
+      console.error('POST /api/public/demo-request failed:', error);
+      res.status(500).json({ error: 'Failed to submit demo request.' });
+    }
+  });
 
   app.get('/api/public/trips', rateLimit(60, 60_000), async (req, res) => {
     try {
@@ -82,6 +145,7 @@ async function startServer() {
             id: trips.id,
             organizationId: trips.organizationId,
             code: trips.code,
+            category: trips.category,
             status: trips.status,
             titleKu: trips.titleKu,
             titleAr: trips.titleAr,
@@ -94,6 +158,7 @@ async function startServer() {
             departureAt: trips.departureAt,
             returnAt: trips.returnAt,
             priceAmount: trips.priceAmount,
+            childPriceAmount: trips.childPriceAmount,
             currency: trips.currency,
             totalCapacity: trips.totalCapacity,
             availableSeats: trips.availableSeats,
@@ -114,6 +179,9 @@ async function startServer() {
             logoUrl: organizations.logoUrl,
             contactEmail: organizations.contactEmail,
             contactPhone: organizations.contactPhone,
+            city: organizations.city,
+            country: organizations.country,
+            socialLinks: organizations.socialLinks,
             status: organizations.status,
             isDemo: organizations.isDemo,
           })
@@ -130,8 +198,6 @@ async function startServer() {
       });
       const orgMap = new Map(activeOrgs.map((o) => [o.id, o]));
 
-      // If a tripCodeFilter is provided without orgSlugParam, automatically resolve its organizationSlug
-      // so a trip link NEVER mixes with other companies!
       let effectiveOrgSlug = orgSlugParam;
       if (!effectiveOrgSlug && tripCodeFilter) {
         const matchedTrip = publishedTrips.find(
@@ -153,6 +219,9 @@ async function startServer() {
           logoUrl: o.logoUrl,
           contactPhone: o.contactPhone,
           contactEmail: o.contactEmail,
+          city: o.city,
+          country: o.country,
+          socialLinks: o.socialLinks,
           cancellationPolicyText: s?.cancellationPolicyText || '',
           isDemo: o.isDemo,
           tripCount: orgTripsCount,
@@ -237,7 +306,6 @@ async function startServer() {
         .where(eq(trips.id, b.tripId))
         .limit(1);
 
-      // Return ONLY safe customer-facing fields (Rule 9.11 & 18)
       res.json({
         booking: {
           bookingCode: b.bookingCode,
@@ -280,10 +348,9 @@ async function startServer() {
     try {
       await client.query('BEGIN');
 
-      const tripRes = await client.query(
-        'SELECT * FROM trips WHERE id = $1 FOR UPDATE',
-        [input.tripId]
-      );
+      const tripRes = await client.query('SELECT * FROM trips WHERE id = $1 FOR UPDATE', [
+        input.tripId,
+      ]);
       if (tripRes.rowCount === 0) {
         await client.query('ROLLBACK');
         return res.status(404).json({ error: 'Trip not found.' });
@@ -296,7 +363,6 @@ async function startServer() {
         return res.status(400).json({ error: 'Trip is not open for public booking.' });
       }
 
-      // Check idempotency key inside tenant
       const existingIdemp = await client.query(
         'SELECT * FROM bookings WHERE organization_id = $1 AND idempotency_key = $2 LIMIT 1',
         [orgId, input.idempotencyKey]
@@ -323,7 +389,6 @@ async function startServer() {
         });
       }
 
-      // Find or create customer in this organization
       let customerId: number;
       const custRes = await client.query(
         'SELECT id FROM customers WHERE organization_id = $1 AND phone = $2 LIMIT 1',
@@ -504,7 +569,6 @@ async function startServer() {
     }
   });
 
-  // Update Authenticated User Personal Profile
   app.patch('/api/me', requireAuth, async (req: AuthRequest, res) => {
     const fullName = String(req.body?.fullName ?? req.dbUser!.fullName).trim();
     const rawPhone = String(req.body?.phone ?? req.dbUser!.phone).trim();
@@ -532,7 +596,6 @@ async function startServer() {
     }
   });
 
-  // Seed Demo Tenants for Development/Testing (Rule 22)
   app.post('/api/dev/seed', requireAuth, async (req: AuthRequest, res) => {
     try {
       const demoOrg = await seedDemoTenantsForUser(req.dbUser!);
@@ -543,17 +606,26 @@ async function startServer() {
     }
   });
 
-  // Create New Travel Organization (Tenant Onboarding)
   app.post('/api/organizations', requireAuth, async (req: AuthRequest, res) => {
     const parsed = createOrganizationSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Invalid organization data', details: parsed.error.issues });
+      return res
+        .status(400)
+        .json({ error: 'Invalid organization data', details: parsed.error.issues });
     }
 
     const data = parsed.data;
+    const requestedPlanCode = String(req.body?.planCode || 'professional').trim();
+    const country = String(req.body?.country || 'Iraq / Kurdistan Region').trim();
+    const city = String(req.body?.city || 'Erbil').trim();
+    const socialLinks = String(req.body?.socialLinks || '').trim();
+
     try {
       const plans = await ensureSubscriptionPlans();
-      const proPlan = plans.find((p) => p.code === 'professional') || plans[0];
+      const selectedPlan =
+        plans.find((p) => p.code === requestedPlanCode) ||
+        plans.find((p) => p.code === 'professional') ||
+        plans[0];
 
       const [createdOrg] = await db
         .insert(organizations)
@@ -564,6 +636,9 @@ async function startServer() {
           logoUrl: data.logoUrl || '',
           contactEmail: data.contactEmail || req.dbUser!.email,
           contactPhone: normalizePhoneNumber(data.contactPhone),
+          country,
+          city,
+          socialLinks,
           defaultLanguage: data.defaultLanguage,
           defaultCurrency: data.defaultCurrency,
           timezone: data.timezone || 'Asia/Baghdad',
@@ -580,18 +655,19 @@ async function startServer() {
       });
 
       const now = new Date();
-      const in14Days = new Date(now.getTime() + 14 * 24 * 60 * 60 * 1000);
+      const trialDays = selectedPlan.trialDays || 14;
+      const trialEnd = new Date(now.getTime() + trialDays * 24 * 60 * 60 * 1000);
 
       await db.insert(subscriptions).values({
         organizationId: createdOrg.id,
-        planId: proPlan.id,
-        planCode: proPlan.code,
+        planId: selectedPlan.id,
+        planCode: selectedPlan.code,
         status: 'trialing',
         billingCycle: 'monthly',
         startDate: now,
-        endDate: in14Days,
-        renewalDate: in14Days,
-        manualVerificationNote: 'Initial 14-day SaaS trial',
+        endDate: trialEnd,
+        renewalDate: trialEnd,
+        manualVerificationNote: `Initial ${trialDays}-day SaaS trial`,
         verifiedByUid: req.user!.uid,
       });
 
@@ -610,14 +686,17 @@ async function startServer() {
         action: 'organization.created',
         entityType: 'organization',
         entityId: String(createdOrg.id),
-        details: `Created organization ${createdOrg.name} (${createdOrg.slug})`,
+        details: `Created organization ${createdOrg.name} (${createdOrg.slug}) on ${selectedPlan.code} trial`,
       });
 
       res.status(201).json({ organization: createdOrg });
     } catch (error: any) {
       console.error('Create organization failed:', error);
       res.status(400).json({
-        error: error?.code === '23505' ? 'Organization slug already exists.' : 'Failed to create organization.',
+        error:
+          error?.code === '23505'
+            ? 'Organization slug already exists.'
+            : 'Failed to create organization.',
       });
     }
   });
@@ -629,24 +708,87 @@ async function startServer() {
   app.get('/api/dashboard', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
     const orgId = req.activeOrganizationId!;
     try {
-      const [orgTrips, orgBookings, orgPayments, orgExpenses, orgNotifications, orgSub, orgSettings] =
-        await Promise.all([
-          db.select().from(trips).where(eq(trips.organizationId, orgId)).orderBy(desc(trips.departureAt)),
-          db.select().from(bookings).where(eq(bookings.organizationId, orgId)).orderBy(desc(bookings.createdAt)),
-          db.select().from(payments).where(eq(payments.organizationId, orgId)).orderBy(desc(payments.receivedAt)),
-          db.select().from(expenses).where(eq(expenses.organizationId, orgId)).orderBy(desc(expenses.expenseDate)),
-          db.select().from(notifications).where(eq(notifications.organizationId, orgId)).orderBy(desc(notifications.createdAt)),
-          db.select().from(subscriptions).where(eq(subscriptions.organizationId, orgId)).limit(1),
-          db.select().from(organizationSettings).where(eq(organizationSettings.organizationId, orgId)).limit(1),
-        ]);
+      const [
+        orgRecord,
+        orgTrips,
+        orgBookings,
+        orgPayments,
+        orgExpenses,
+        orgNotifications,
+        orgSub,
+        orgSettings,
+        orgMembers,
+        orgPickupPoints,
+        orgLogs,
+      ] = await Promise.all([
+        db.select().from(organizations).where(eq(organizations.id, orgId)).limit(1),
+        db
+          .select()
+          .from(trips)
+          .where(eq(trips.organizationId, orgId))
+          .orderBy(desc(trips.departureAt)),
+        db
+          .select()
+          .from(bookings)
+          .where(eq(bookings.organizationId, orgId))
+          .orderBy(desc(bookings.createdAt)),
+        db
+          .select()
+          .from(payments)
+          .where(eq(payments.organizationId, orgId))
+          .orderBy(desc(payments.receivedAt)),
+        db
+          .select()
+          .from(expenses)
+          .where(eq(expenses.organizationId, orgId))
+          .orderBy(desc(expenses.expenseDate)),
+        db
+          .select()
+          .from(notifications)
+          .where(eq(notifications.organizationId, orgId))
+          .orderBy(desc(notifications.createdAt)),
+        db.select().from(subscriptions).where(eq(subscriptions.organizationId, orgId)).limit(1),
+        db
+          .select()
+          .from(organizationSettings)
+          .where(eq(organizationSettings.organizationId, orgId))
+          .limit(1),
+        db.select().from(memberships).where(eq(memberships.organizationId, orgId)),
+        db.select().from(tripPickupPoints).where(eq(tripPickupPoints.organizationId, orgId)),
+        db
+          .select()
+          .from(activityLogs)
+          .where(eq(activityLogs.organizationId, orgId))
+          .orderBy(desc(activityLogs.createdAt))
+          .limit(12),
+      ]);
 
       const activeTripsCount = orgTrips.filter(
         (t) => t.status === 'published' || t.status === 'full'
       ).length;
       const pendingBookingsCount = orgBookings.filter((b) => b.status === 'pending').length;
+      const approvedBookingsCount = orgBookings.filter(
+        (b) => b.status === 'approved' || b.status === 'completed'
+      ).length;
       const totalPassengers = orgBookings
         .filter((b) => b.status === 'approved' || b.status === 'completed' || b.status === 'pending')
         .reduce((sum, b) => sum + b.passengerCount, 0);
+      const totalAvailableSeats = orgTrips
+        .filter((t) => t.status === 'published')
+        .reduce((sum, t) => sum + t.availableSeats, 0);
+
+      // Compute onboarding checklist progress dynamically from actual DB records (Section 4)
+      const org = orgRecord[0];
+      const onboardingChecklist = {
+        profileCompleted: Boolean(org?.name && org?.legalName && org?.city),
+        logoUploaded: Boolean(org?.logoUrl),
+        contactConfigured: Boolean(org?.contactPhone && org?.contactEmail),
+        staffAdded: orgMembers.length > 1,
+        firstTripCreated: orgTrips.length > 0,
+        pickupPointsAdded: orgPickupPoints.length > 0,
+        firstTripPublished: orgTrips.some((t) => t.status === 'published' || t.status === 'full'),
+        firstPaymentRecorded: orgPayments.length > 0,
+      };
 
       const ledgerSummary = calculateLedgerSummary({
         bookings: orgBookings.map((b) => ({
@@ -668,15 +810,20 @@ async function startServer() {
 
       res.json({
         kpis: {
+          totalTripsCount: orgTrips.length,
           activeTripsCount,
           totalBookingsCount: orgBookings.length,
           pendingBookingsCount,
+          approvedBookingsCount,
           totalPassengers,
+          totalAvailableSeats,
         },
+        onboardingChecklist,
         ledger: ledgerSummary,
         upcomingTrips: orgTrips.slice(0, 6),
         recentBookings: orgBookings.slice(0, 6),
-        notifications: orgNotifications.slice(0, 10),
+        notifications: orgNotifications.slice(0, 15),
+        recentActivities: orgLogs,
         subscription: orgSub[0] || null,
         settings: orgSettings[0] || null,
       });
@@ -686,25 +833,36 @@ async function startServer() {
     }
   });
 
-  // TRIPS MODULE
+  // TRIPS & TRIP EXECUTION MODULE
   app.get('/api/trips', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
     if (!hasPermission(req.activeMembership, 'trips.read')) {
       return res.status(403).json({ error: 'Forbidden: Missing trips.read permission' });
     }
     const orgId = req.activeOrganizationId!;
     try {
-      const [orgTrips, orgGuides, orgVehicles, pickupPoints] = await Promise.all([
-        db.select().from(trips).where(eq(trips.organizationId, orgId)).orderBy(desc(trips.departureAt)),
-        db.select().from(guides).where(eq(guides.organizationId, orgId)),
-        db.select().from(vehicles).where(eq(vehicles.organizationId, orgId)),
-        db.select().from(tripPickupPoints).where(eq(tripPickupPoints.organizationId, orgId)),
-      ]);
+      const [orgTrips, orgGuides, orgVehicles, pickupPoints, orgPassengers, orgBookings, orgExpenses] =
+        await Promise.all([
+          db
+            .select()
+            .from(trips)
+            .where(eq(trips.organizationId, orgId))
+            .orderBy(desc(trips.departureAt)),
+          db.select().from(guides).where(eq(guides.organizationId, orgId)),
+          db.select().from(vehicles).where(eq(vehicles.organizationId, orgId)),
+          db.select().from(tripPickupPoints).where(eq(tripPickupPoints.organizationId, orgId)),
+          db.select().from(bookingPassengers).where(eq(bookingPassengers.organizationId, orgId)),
+          db.select().from(bookings).where(eq(bookings.organizationId, orgId)),
+          db.select().from(expenses).where(eq(expenses.organizationId, orgId)),
+        ]);
 
       res.json({
         trips: orgTrips,
         guides: orgGuides,
         vehicles: orgVehicles,
         pickupPoints,
+        passengers: orgPassengers,
+        bookings: orgBookings,
+        expenses: orgExpenses,
       });
     } catch (error) {
       console.error('GET /api/trips failed:', error);
@@ -724,9 +882,10 @@ async function startServer() {
 
     const orgId = req.activeOrganizationId!;
     const data = parsed.data;
+    const category = String(req.body?.category || 'nature').trim();
+    const childPriceAmount = Math.max(0, Number(req.body?.childPriceAmount || 0));
 
     try {
-      // Check subscription active trip limit
       const [sub] = await db
         .select()
         .from(subscriptions)
@@ -734,7 +893,11 @@ async function startServer() {
         .limit(1);
 
       const [plan] = sub
-        ? await db.select().from(subscriptionPlans).where(eq(subscriptionPlans.id, sub.planId)).limit(1)
+        ? await db
+            .select()
+            .from(subscriptionPlans)
+            .where(eq(subscriptionPlans.id, sub.planId))
+            .limit(1)
         : [];
 
       const existingTrips = await db.select().from(trips).where(eq(trips.organizationId, orgId));
@@ -759,6 +922,7 @@ async function startServer() {
         .values({
           organizationId: orgId,
           code: data.code.trim().toUpperCase(),
+          category,
           status: data.status,
           titleKu: data.titleKu.trim(),
           titleAr: data.titleAr || data.titleKu.trim(),
@@ -771,6 +935,7 @@ async function startServer() {
           departureAt: new Date(data.departureAt),
           returnAt: new Date(data.returnAt),
           priceAmount: data.priceAmount,
+          childPriceAmount,
           currency: data.currency,
           totalCapacity: data.totalCapacity,
           reservedSeats: 0,
@@ -811,7 +976,10 @@ async function startServer() {
     } catch (error: any) {
       console.error('Create trip failed:', error);
       res.status(400).json({
-        error: error?.code === '23505' ? 'Trip code already exists in this organization.' : 'Failed to create trip.',
+        error:
+          error?.code === '23505'
+            ? 'Trip code already exists in this organization.'
+            : 'Failed to create trip.',
       });
     }
   });
@@ -849,6 +1017,16 @@ async function startServer() {
         .set({
           status: newStatus || existing.status,
           coverImageUrl: newCoverImage,
+          guideId: req.body?.guideId !== undefined ? req.body.guideId : existing.guideId,
+          vehicleId: req.body?.vehicleId !== undefined ? req.body.vehicleId : existing.vehicleId,
+          operationalNotes:
+            typeof req.body?.operationalNotes === 'string'
+              ? req.body.operationalNotes
+              : existing.operationalNotes,
+          preparationChecklist:
+            req.body?.preparationChecklist !== undefined
+              ? req.body.preparationChecklist
+              : existing.preparationChecklist,
           updatedAt: new Date(),
         })
         .where(and(eq(trips.id, tripId), eq(trips.organizationId, orgId)))
@@ -858,10 +1036,10 @@ async function startServer() {
         organizationId: orgId,
         actorUid: req.user!.uid,
         actorEmail: req.dbUser!.email,
-        action: `trip.status.${updated.status}`,
+        action: `trip.updated.${updated.status}`,
         entityType: 'trip',
         entityId: String(tripId),
-        details: `Trip ${existing.code} transitioned from ${existing.status} to ${updated.status}`,
+        details: `Trip ${existing.code} updated (status=${updated.status})`,
       });
 
       res.json({ trip: updated });
@@ -871,6 +1049,49 @@ async function startServer() {
     }
   });
 
+  // Passenger Attendance Check-In (Section 10 — Tour Guide / Operations Staff)
+  app.patch(
+    '/api/passengers/:id/attendance',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      const passengerId = Number(req.params.id);
+      const orgId = req.activeOrganizationId!;
+      const attendanceStatus = String(req.body?.attendanceStatus || 'present');
+      const attendanceNotes = String(req.body?.attendanceNotes || '').trim();
+
+      if (!['pending', 'present', 'no_show'].includes(attendanceStatus)) {
+        return res.status(400).json({ error: 'Invalid attendance status.' });
+      }
+
+      try {
+        const [updated] = await db
+          .update(bookingPassengers)
+          .set({
+            attendanceStatus,
+            attendanceNotes,
+            checkedInAt: attendanceStatus === 'present' ? new Date() : null,
+          })
+          .where(
+            and(
+              eq(bookingPassengers.id, passengerId),
+              eq(bookingPassengers.organizationId, orgId)
+            )
+          )
+          .returning();
+
+        if (!updated) {
+          return res.status(404).json({ error: 'Passenger not found in your organization.' });
+        }
+
+        res.json({ passenger: updated });
+      } catch (error) {
+        console.error('Update passenger attendance failed:', error);
+        res.status(500).json({ error: 'Failed to update passenger attendance.' });
+      }
+    }
+  );
+
   // BOOKINGS MODULE (Atomic Concurrency Protection)
   app.get('/api/bookings', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
     if (!hasPermission(req.activeMembership, 'bookings.read')) {
@@ -879,11 +1100,19 @@ async function startServer() {
     const orgId = req.activeOrganizationId!;
     try {
       const [orgBookings, orgCustomers, orgTrips, orgPassengers, orgHistory] = await Promise.all([
-        db.select().from(bookings).where(eq(bookings.organizationId, orgId)).orderBy(desc(bookings.createdAt)),
+        db
+          .select()
+          .from(bookings)
+          .where(eq(bookings.organizationId, orgId))
+          .orderBy(desc(bookings.createdAt)),
         db.select().from(customers).where(eq(customers.organizationId, orgId)),
         db.select().from(trips).where(eq(trips.organizationId, orgId)),
         db.select().from(bookingPassengers).where(eq(bookingPassengers.organizationId, orgId)),
-        db.select().from(bookingStatusHistory).where(eq(bookingStatusHistory.organizationId, orgId)).orderBy(desc(bookingStatusHistory.createdAt)),
+        db
+          .select()
+          .from(bookingStatusHistory)
+          .where(eq(bookingStatusHistory.organizationId, orgId))
+          .orderBy(desc(bookingStatusHistory.createdAt)),
       ]);
 
       res.json({
@@ -911,12 +1140,12 @@ async function startServer() {
 
     const orgId = req.activeOrganizationId!;
     const input = parsed.data;
+    const installmentDueDate = String(req.body?.installmentDueDate || '').trim();
     const client = await pool.connect();
 
     try {
       await client.query('BEGIN');
 
-      // 1. Check idempotency key inside tenant
       const idempRes = await client.query(
         'SELECT * FROM bookings WHERE organization_id = $1 AND idempotency_key = $2 LIMIT 1',
         [orgId, input.idempotencyKey]
@@ -926,7 +1155,6 @@ async function startServer() {
         return res.status(200).json({ booking: idempRes.rows[0], deduplicated: true });
       }
 
-      // 2. Row-level lock on trip (Rule 11.1)
       const tripRes = await client.query(
         'SELECT * FROM trips WHERE id = $1 AND organization_id = $2 FOR UPDATE',
         [input.tripId, orgId]
@@ -962,7 +1190,6 @@ async function startServer() {
         });
       }
 
-      // 3. Resolve or create customer within same tenant
       let customerId = input.customerId;
       let customerName = input.customerName || 'Traveler';
       let customerPhone = normalizePhoneNumber(input.customerPhone || '');
@@ -985,7 +1212,9 @@ async function startServer() {
       } else {
         if (!input.customerName || !customerPhone) {
           await client.query('ROLLBACK');
-          return res.status(400).json({ error: 'Select an existing customer or provide name and phone.' });
+          return res
+            .status(400)
+            .json({ error: 'Select an existing customer or provide name and phone.' });
         }
         const newCust = await client.query(
           `INSERT INTO customers (organization_id, full_name, phone, email, total_bookings)
@@ -1003,9 +1232,9 @@ async function startServer() {
         `INSERT INTO bookings (
           organization_id, trip_id, customer_id, booking_code, status,
           passenger_count, unit_price, total_amount, paid_amount, currency,
-          seats_reserved, pickup_point_name, customer_notes, internal_notes,
+          seats_reserved, pickup_point_name, installment_due_date, customer_notes, internal_notes,
           idempotency_key, created_by_uid
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,$9,$10,$11,$12,$13,$14,$15)
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,0,$9,$10,$11,$12,$13,$14,$15,$16)
         RETURNING *`,
         [
           orgId,
@@ -1019,6 +1248,7 @@ async function startServer() {
           tripRow.currency,
           holdSeats,
           input.pickupPointName || '',
+          installmentDueDate,
           input.customerNotes || '',
           input.internalNotes || '',
           input.idempotencyKey,
@@ -1028,11 +1258,17 @@ async function startServer() {
 
       const createdBooking = bookingInsert.rows[0];
 
-      // Insert passengers
       const passengerRows =
         input.passengers && input.passengers.length > 0
           ? input.passengers
-          : [{ fullName: customerName, phone: customerPhone, ageGroup: 'adult' as const, specialRequirements: '' }];
+          : [
+              {
+                fullName: customerName,
+                phone: customerPhone,
+                ageGroup: 'adult' as const,
+                specialRequirements: '',
+              },
+            ];
 
       for (const p of passengerRows) {
         await client.query(
@@ -1092,7 +1328,6 @@ async function startServer() {
     }
   });
 
-  // Atomic Booking Status Transition (Approve / Reject / Cancel / Complete / No-Show)
   app.patch(
     '/api/bookings/:id/status',
     requireAuth,
@@ -1118,7 +1353,9 @@ async function startServer() {
         return res.status(403).json({ error: 'Forbidden: Missing bookings.cancel permission' });
       }
       if (
-        (targetStatus === 'approved' || targetStatus === 'completed' || targetStatus === 'no_show') &&
+        (targetStatus === 'approved' ||
+          targetStatus === 'completed' ||
+          targetStatus === 'no_show') &&
         !hasPermission(req.activeMembership, 'bookings.approve')
       ) {
         return res.status(403).json({ error: 'Forbidden: Missing bookings.approve permission' });
@@ -1192,7 +1429,14 @@ async function startServer() {
         await client.query(
           `INSERT INTO booking_status_history (organization_id, booking_id, from_status, to_status, reason, changed_by_uid)
            VALUES ($1, $2, $3, $4, $5, $6)`,
-          [orgId, bookingId, bRow.status, targetStatus, reason || `Status updated to ${targetStatus}`, req.user!.uid]
+          [
+            orgId,
+            bookingId,
+            bRow.status,
+            targetStatus,
+            reason || `Status updated to ${targetStatus}`,
+            req.user!.uid,
+          ]
         );
 
         await client.query(
@@ -1227,13 +1471,19 @@ async function startServer() {
     }
     const orgId = req.activeOrganizationId!;
     try {
-      const [orgCustomers, orgBookings] = await Promise.all([
-        db.select().from(customers).where(eq(customers.organizationId, orgId)).orderBy(desc(customers.createdAt)),
+      const [orgCustomers, orgBookings, orgPayments] = await Promise.all([
+        db
+          .select()
+          .from(customers)
+          .where(eq(customers.organizationId, orgId))
+          .orderBy(desc(customers.createdAt)),
         db.select().from(bookings).where(eq(bookings.organizationId, orgId)),
+        db.select().from(payments).where(eq(payments.organizationId, orgId)),
       ]);
 
       const enriched = orgCustomers.map((c) => {
         const custBookings = orgBookings.filter((b) => b.customerId === c.id);
+        const custPayments = orgPayments.filter((p) => p.customerId === c.id);
         let paidIqd = 0;
         let debtIqd = 0;
         let paidUsd = 0;
@@ -1254,6 +1504,8 @@ async function startServer() {
         return {
           ...c,
           bookingCount: custBookings.length,
+          bookings: custBookings,
+          payments: custPayments,
           paidIqd,
           debtIqd,
           paidUsd,
@@ -1274,7 +1526,9 @@ async function startServer() {
     }
     const parsed = createCustomerSchema.safeParse(req.body);
     if (!parsed.success) {
-      return res.status(400).json({ error: 'Invalid customer data', details: parsed.error.issues });
+      return res
+        .status(400)
+        .json({ error: 'Invalid customer data', details: parsed.error.issues });
     }
     const orgId = req.activeOrganizationId!;
     const data = parsed.data;
@@ -1306,8 +1560,16 @@ async function startServer() {
     const orgId = req.activeOrganizationId!;
     try {
       const [orgPayments, orgExpenses, orgBookings, orgTrips, orgCustomers] = await Promise.all([
-        db.select().from(payments).where(eq(payments.organizationId, orgId)).orderBy(desc(payments.receivedAt)),
-        db.select().from(expenses).where(eq(expenses.organizationId, orgId)).orderBy(desc(expenses.expenseDate)),
+        db
+          .select()
+          .from(payments)
+          .where(eq(payments.organizationId, orgId))
+          .orderBy(desc(payments.receivedAt)),
+        db
+          .select()
+          .from(expenses)
+          .where(eq(expenses.organizationId, orgId))
+          .orderBy(desc(expenses.expenseDate)),
         db.select().from(bookings).where(eq(bookings.organizationId, orgId)),
         db.select().from(trips).where(eq(trips.organizationId, orgId)),
         db.select().from(customers).where(eq(customers.organizationId, orgId)),
@@ -1331,8 +1593,10 @@ async function startServer() {
         })),
       });
 
-      // Trip-level profitability breakdown
       const tripProfitability = orgTrips.map((t) => {
+        const tBookings = orgBookings.filter(
+          (b) => b.tripId === t.id && b.status !== 'cancelled' && b.status !== 'rejected'
+        );
         const tPayments = orgPayments.filter((p) => p.tripId === t.id && p.currency === t.currency);
         const tExpenses = orgExpenses.filter((e) => e.tripId === t.id && e.currency === t.currency);
         const collected = calculateBookingNetPaid(
@@ -1343,7 +1607,13 @@ async function startServer() {
           })),
           (t.currency === 'USD' ? 'USD' : 'IQD') as Currency
         );
+        const expectedRevenue = tBookings.reduce((s, b) => s + b.totalAmount, 0);
+        const outstanding = Math.max(0, expectedRevenue - collected);
         const spent = tExpenses.reduce((s, e) => s + e.amount, 0);
+        const netProfit = collected - spent;
+        const estimatedProfit = expectedRevenue - spent;
+        const marginPct = collected > 0 ? Math.round((netProfit / collected) * 100) : 0;
+
         return {
           tripId: t.id,
           code: t.code,
@@ -1351,9 +1621,13 @@ async function startServer() {
           titleAr: t.titleAr,
           titleEn: t.titleEn,
           currency: t.currency,
+          confirmedPassengers: tBookings.reduce((s, b) => s + b.passengerCount, 0),
           collected,
+          outstanding,
           expenses: spent,
-          netProfit: collected - spent,
+          estimatedProfit,
+          netProfit,
+          marginPct,
         };
       });
 
@@ -1405,6 +1679,20 @@ async function startServer() {
         });
       }
 
+      // Prevent duplicate referenceCode on the same booking if provided
+      if (data.referenceCode && data.referenceCode.trim()) {
+        const dupCheck = await client.query(
+          'SELECT id FROM payments WHERE organization_id = $1 AND booking_id = $2 AND reference_code = $3 LIMIT 1',
+          [orgId, bRow.id, data.referenceCode.trim()]
+        );
+        if (dupCheck.rowCount && dupCheck.rowCount > 0) {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: `Duplicate payment reference code (${data.referenceCode}) for this booking.`,
+          });
+        }
+      }
+
       const pInsert = await client.query(
         `INSERT INTO payments (
           organization_id, booking_id, trip_id, customer_id, entry_type,
@@ -1425,7 +1713,6 @@ async function startServer() {
         ]
       );
 
-      // Recompute net paid from all ledger rows for this booking
       const allEntriesRes = await client.query(
         'SELECT entry_type, amount, currency FROM payments WHERE booking_id = $1 AND organization_id = $2',
         [bRow.id, orgId]
@@ -1439,10 +1726,10 @@ async function startServer() {
         bRow.currency
       );
 
-      await client.query(
-        'UPDATE bookings SET paid_amount = $1, updated_at = NOW() WHERE id = $2',
-        [netPaid, bRow.id]
-      );
+      await client.query('UPDATE bookings SET paid_amount = $1, updated_at = NOW() WHERE id = $2', [
+        netPaid,
+        bRow.id,
+      ]);
 
       await client.query(
         `INSERT INTO activity_logs (organization_id, actor_uid, actor_email, action, entity_type, entity_id, details)
@@ -1512,6 +1799,328 @@ async function startServer() {
     }
   });
 
+  // ==========================================================================
+  // 4. COMPANY SUBSCRIPTION PORTAL, COUPONS, INVOICES & SUPPORT TICKETS
+  // ==========================================================================
+
+  app.get(
+    '/api/subscription',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      const orgId = req.activeOrganizationId!;
+      try {
+        const [
+          orgSub,
+          allPlans,
+          orgInvoices,
+          orgSubPayments,
+          methods,
+          orgTrips,
+          orgMembers,
+          orgBookings,
+        ] = await Promise.all([
+          db.select().from(subscriptions).where(eq(subscriptions.organizationId, orgId)).limit(1),
+          db.select().from(subscriptionPlans).where(eq(subscriptionPlans.isActive, true)),
+          db
+            .select()
+            .from(subscriptionInvoices)
+            .where(eq(subscriptionInvoices.organizationId, orgId))
+            .orderBy(desc(subscriptionInvoices.createdAt)),
+          db
+            .select()
+            .from(subscriptionPayments)
+            .where(eq(subscriptionPayments.organizationId, orgId))
+            .orderBy(desc(subscriptionPayments.createdAt)),
+          db
+            .select()
+            .from(platformPaymentMethods)
+            .where(eq(platformPaymentMethods.isEnabled, true)),
+          db.select().from(trips).where(eq(trips.organizationId, orgId)),
+          db.select().from(memberships).where(eq(memberships.organizationId, orgId)),
+          db.select().from(bookings).where(eq(bookings.organizationId, orgId)),
+        ]);
+
+        const sub = orgSub[0] || null;
+        const currentPlan = sub ? allPlans.find((p) => p.id === sub.planId) || allPlans[0] : allPlans[0];
+        const activeTripsCount = orgTrips.filter(
+          (t) => t.status === 'draft' || t.status === 'published' || t.status === 'full'
+        ).length;
+
+        res.json({
+          subscription: sub,
+          currentPlan,
+          plans: allPlans,
+          invoices: orgInvoices,
+          payments: orgSubPayments,
+          paymentMethods: methods,
+          usage: {
+            activeTripsCount,
+            maxActiveTrips: currentPlan?.maxActiveTrips || 15,
+            membersCount: orgMembers.length,
+            maxMembers: currentPlan?.maxMembers || 5,
+            bookingsCount: orgBookings.length,
+            maxMonthlyBookings: currentPlan?.maxMonthlyBookings || 200,
+          },
+        });
+      } catch (error) {
+        console.error('GET /api/subscription failed:', error);
+        res.status(500).json({ error: 'Failed to load company subscription portal.' });
+      }
+    }
+  );
+
+  // Request Subscription Renewal / Plan Upgrade with Manual Payment Reference & Optional Coupon
+  app.post(
+    '/api/subscription/renew',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      if (!hasPermission(req.activeMembership, 'settings.manage')) {
+        return res.status(403).json({ error: 'Forbidden: Only owner/settings manager can renew subscription.' });
+      }
+
+      const orgId = req.activeOrganizationId!;
+      const planCode = String(req.body?.planCode || 'professional').trim();
+      const billingCycle = req.body?.billingCycle === 'annual' ? 'annual' : 'monthly';
+      const currency: Currency = req.body?.currency === 'USD' ? 'USD' : 'IQD';
+      const paymentMethod = String(req.body?.paymentMethod || 'manual_bank_transfer').trim();
+      const transactionReference = String(req.body?.transactionReference || '').trim();
+      const receiptNotes = String(req.body?.receiptNotes || '').trim();
+      const couponCode = String(req.body?.couponCode || '').trim().toUpperCase();
+
+      if (!transactionReference) {
+        return res.status(400).json({
+          error: 'ژمارەی پسوولەی حەواڵە / پارەدان (Transaction Reference) پێویستە.',
+        });
+      }
+
+      try {
+        const [targetPlan] = await db
+          .select()
+          .from(subscriptionPlans)
+          .where(eq(subscriptionPlans.code, planCode))
+          .limit(1);
+
+        if (!targetPlan) {
+          return res.status(404).json({ error: 'Selected subscription plan not found.' });
+        }
+
+        let originalAmount =
+          currency === 'USD'
+            ? billingCycle === 'annual'
+              ? targetPlan.proposedAnnualUsd
+              : targetPlan.proposedMonthlyUsd
+            : billingCycle === 'annual'
+            ? targetPlan.proposedAnnualIqd
+            : targetPlan.proposedMonthlyIqd;
+
+        let discountAmount = 0;
+
+        if (couponCode) {
+          const [coupon] = await db
+            .select()
+            .from(coupons)
+            .where(eq(coupons.code, couponCode))
+            .limit(1);
+
+          if (
+            !coupon ||
+            !coupon.isActive ||
+            coupon.usedCount >= coupon.maxUses ||
+            new Date(coupon.expiresAt) < new Date()
+          ) {
+            return res.status(400).json({
+              error: 'کۆدی داشکاندن (Coupon) نادروستە یان ماوەکەی بەسەرچووە.',
+            });
+          }
+
+          if (coupon.discountType === 'percentage') {
+            discountAmount = Math.round((originalAmount * coupon.discountValue) / 100);
+          } else if (coupon.currency === currency) {
+            discountAmount = Math.min(originalAmount, coupon.discountValue);
+          }
+
+          await db
+            .update(coupons)
+            .set({ usedCount: coupon.usedCount + 1 })
+            .where(eq(coupons.id, coupon.id));
+        }
+
+        const finalAmount = Math.max(0, originalAmount - discountAmount);
+        const now = new Date();
+        const dueDate = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+        const invoiceNumber = `INV-RVN-${now.getFullYear()}-${Math.floor(1000 + Math.random() * 9000)}`;
+
+        const [invoice] = await db
+          .insert(subscriptionInvoices)
+          .values({
+            invoiceNumber,
+            organizationId: orgId,
+            planCode: targetPlan.code,
+            billingCycle,
+            originalAmount,
+            discountAmount,
+            finalAmount,
+            currency,
+            couponCode,
+            paymentMethod,
+            status: 'pending_verification',
+            issueDate: now,
+            dueDate,
+          })
+          .returning();
+
+        const [subPayment] = await db
+          .insert(subscriptionPayments)
+          .values({
+            organizationId: orgId,
+            invoiceId: invoice.id,
+            planCode: targetPlan.code,
+            billingCycle,
+            amount: finalAmount,
+            currency,
+            paymentMethod,
+            transactionReference,
+            receiptNotes,
+            status: 'pending_verification',
+            extensionApplied: false,
+            submittedByUid: req.user!.uid,
+          })
+          .returning();
+
+        await db.insert(activityLogs).values({
+          organizationId: orgId,
+          actorUid: req.user!.uid,
+          actorEmail: req.dbUser!.email,
+          action: 'subscription.renewal_requested',
+          entityType: 'subscription_invoice',
+          entityId: String(invoice.id),
+          details: `Submitted renewal (${targetPlan.code}, ${billingCycle}, ${finalAmount} ${currency}, ref=${transactionReference})`,
+        });
+
+        res.status(201).json({ invoice, payment: subPayment });
+      } catch (error) {
+        console.error('POST /api/subscription/renew failed:', error);
+        res.status(500).json({ error: 'Failed to submit subscription renewal request.' });
+      }
+    }
+  );
+
+  // SUPPORT TICKETS MODULE (Section 26)
+  app.get(
+    '/api/support-tickets',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      const orgId = req.activeOrganizationId!;
+      try {
+        const tickets = await db
+          .select()
+          .from(supportTickets)
+          .where(eq(supportTickets.organizationId, orgId))
+          .orderBy(desc(supportTickets.createdAt));
+        res.json({ tickets });
+      } catch (error) {
+        console.error('GET /api/support-tickets failed:', error);
+        res.status(500).json({ error: 'Failed to load support tickets.' });
+      }
+    }
+  );
+
+  app.post(
+    '/api/support-tickets',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      const orgId = req.activeOrganizationId!;
+      const subject = String(req.body?.subject || '').trim();
+      const category = String(req.body?.category || 'operations').trim();
+      const description = String(req.body?.description || '').trim();
+      const priority = String(req.body?.priority || 'normal').trim();
+
+      if (!subject || !description) {
+        return res.status(400).json({ error: 'Subject and description are required.' });
+      }
+
+      try {
+        const [ticket] = await db
+          .insert(supportTickets)
+          .values({
+            organizationId: orgId,
+            createdByUid: req.user!.uid,
+            createdByEmail: req.dbUser!.email,
+            subject,
+            category,
+            description,
+            priority,
+            status: 'open',
+          })
+          .returning();
+
+        res.status(201).json({ ticket });
+      } catch (error) {
+        console.error('POST /api/support-tickets failed:', error);
+        res.status(500).json({ error: 'Failed to submit support ticket.' });
+      }
+    }
+  );
+
+  // COMPANY REPORTS & ANALYTICS MODULE (Section 13)
+  app.get('/api/reports', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
+    if (!hasPermission(req.activeMembership, 'reports.read')) {
+      return res.status(403).json({ error: 'Forbidden: Missing reports.read permission' });
+    }
+    const orgId = req.activeOrganizationId!;
+    try {
+      const [orgTrips, orgBookings, orgPayments, orgExpenses, orgCustomers] = await Promise.all([
+        db.select().from(trips).where(eq(trips.organizationId, orgId)),
+        db.select().from(bookings).where(eq(bookings.organizationId, orgId)),
+        db.select().from(payments).where(eq(payments.organizationId, orgId)),
+        db.select().from(expenses).where(eq(expenses.organizationId, orgId)),
+        db.select().from(customers).where(eq(customers.organizationId, orgId)),
+      ]);
+
+      const totalBookings = orgBookings.length;
+      const cancelledBookings = orgBookings.filter(
+        (b) => b.status === 'cancelled' || b.status === 'rejected'
+      ).length;
+      const cancellationRatePct =
+        totalBookings > 0 ? Math.round((cancelledBookings / totalBookings) * 100) : 0;
+
+      // Popular destinations breakdown
+      const destinationMap = new Map<
+        string,
+        { destination: string; tripCount: number; passengerCount: number }
+      >();
+      for (const tr of orgTrips) {
+        const cur = destinationMap.get(tr.destination) || {
+          destination: tr.destination,
+          tripCount: 0,
+          passengerCount: 0,
+        };
+        cur.tripCount += 1;
+        cur.passengerCount += tr.totalCapacity - tr.availableSeats;
+        destinationMap.set(tr.destination, cur);
+      }
+
+      res.json({
+        cancellationRatePct,
+        totalTrips: orgTrips.length,
+        totalBookings,
+        totalCustomers: orgCustomers.length,
+        popularDestinations: Array.from(destinationMap.values()),
+        trips: orgTrips,
+        bookings: orgBookings,
+        payments: orgPayments,
+        expenses: orgExpenses,
+      });
+    } catch (error) {
+      console.error('GET /api/reports failed:', error);
+      res.status(500).json({ error: 'Failed to generate company reports.' });
+    }
+  });
+
   // TEAM, GUIDES & VEHICLES MODULE
   app.get('/api/members', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
     const orgId = req.activeOrganizationId!;
@@ -1543,96 +2152,106 @@ async function startServer() {
     }
   });
 
-  app.post('/api/members/invite', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
-    if (!hasPermission(req.activeMembership, 'members.invite')) {
-      return res.status(403).json({ error: 'Forbidden: Missing members.invite permission' });
-    }
-    const orgId = req.activeOrganizationId!;
-    const email = String(req.body?.email || '').trim().toLowerCase();
-    const role = (req.body?.role || 'booking_agent') as Role;
+  app.post(
+    '/api/members/invite',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      if (!hasPermission(req.activeMembership, 'members.invite')) {
+        return res.status(403).json({ error: 'Forbidden: Missing members.invite permission' });
+      }
+      const orgId = req.activeOrganizationId!;
+      const email = String(req.body?.email || '').trim().toLowerCase();
+      const role = (req.body?.role || 'booking_agent') as Role;
 
-    if (!email || !email.includes('@')) {
-      return res.status(400).json({ error: 'Valid email is required.' });
-    }
+      if (!email || !email.includes('@')) {
+        return res.status(400).json({ error: 'Valid email is required.' });
+      }
 
-    try {
-      const token = `inv_${Math.random().toString(36).slice(2, 12)}`;
-      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
+      try {
+        const token = `inv_${Math.random().toString(36).slice(2, 12)}`;
+        const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
 
-      const [created] = await db
-        .insert(invites)
-        .values({
+        const [created] = await db
+          .insert(invites)
+          .values({
+            organizationId: orgId,
+            email,
+            role,
+            token,
+            status: 'pending',
+            invitedByUid: req.user!.uid,
+            expiresAt,
+          })
+          .returning();
+
+        await db.insert(activityLogs).values({
           organizationId: orgId,
-          email,
-          role,
-          token,
-          status: 'pending',
-          invitedByUid: req.user!.uid,
-          expiresAt,
-        })
-        .returning();
+          actorUid: req.user!.uid,
+          actorEmail: req.dbUser!.email,
+          action: 'member.invited',
+          entityType: 'invite',
+          entityId: String(created.id),
+          details: `Invited ${email} with role ${role}`,
+        });
 
-      await db.insert(activityLogs).values({
-        organizationId: orgId,
-        actorUid: req.user!.uid,
-        actorEmail: req.dbUser!.email,
-        action: 'member.invited',
-        entityType: 'invite',
-        entityId: String(created.id),
-        details: `Invited ${email} with role ${role}`,
-      });
-
-      res.status(201).json({ invite: created });
-    } catch (error) {
-      console.error('Invite member failed:', error);
-      res.status(500).json({ error: 'Failed to create member invitation.' });
-    }
-  });
-
-  app.patch('/api/members/:id', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
-    const memberId = Number(req.params.id);
-    const orgId = req.activeOrganizationId!;
-    const newRole = req.body?.role as Role;
-    const newStatus = req.body?.status as string | undefined;
-
-    try {
-      const [target] = await db
-        .select()
-        .from(memberships)
-        .where(and(eq(memberships.id, memberId), eq(memberships.organizationId, orgId)))
-        .limit(1);
-
-      if (!target) {
-        return res.status(404).json({ error: 'Membership not found.' });
+        res.status(201).json({ invite: created });
+      } catch (error) {
+        console.error('Invite member failed:', error);
+        res.status(500).json({ error: 'Failed to create member invitation.' });
       }
-
-      const check = canModifyMemberRole({
-        actorUid: req.user!.uid,
-        actorMembership: req.activeMembership!,
-        targetUserUid: target.userUid,
-        newRole: newRole || (target.role as Role),
-      });
-
-      if (!check.allowed) {
-        return res.status(403).json({ error: check.reason });
-      }
-
-      const [updated] = await db
-        .update(memberships)
-        .set({
-          role: newRole || target.role,
-          status: newStatus || target.status,
-          updatedAt: new Date(),
-        })
-        .where(eq(memberships.id, memberId))
-        .returning();
-
-      res.json({ membership: updated });
-    } catch (error) {
-      console.error('Update membership failed:', error);
-      res.status(500).json({ error: 'Failed to update member role.' });
     }
-  });
+  );
+
+  app.patch(
+    '/api/members/:id',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      const memberId = Number(req.params.id);
+      const orgId = req.activeOrganizationId!;
+      const newRole = req.body?.role as Role;
+      const newStatus = req.body?.status as string | undefined;
+
+      try {
+        const [target] = await db
+          .select()
+          .from(memberships)
+          .where(and(eq(memberships.id, memberId), eq(memberships.organizationId, orgId)))
+          .limit(1);
+
+        if (!target) {
+          return res.status(404).json({ error: 'Membership not found.' });
+        }
+
+        const check = canModifyMemberRole({
+          actorUid: req.user!.uid,
+          actorMembership: req.activeMembership!,
+          targetUserUid: target.userUid,
+          newRole: newRole || (target.role as Role),
+        });
+
+        if (!check.allowed) {
+          return res.status(403).json({ error: check.reason });
+        }
+
+        const [updated] = await db
+          .update(memberships)
+          .set({
+            role: newRole || target.role,
+            status: newStatus || target.status,
+            updatedAt: new Date(),
+          })
+          .where(eq(memberships.id, memberId))
+          .returning();
+
+        res.json({ membership: updated });
+      } catch (error) {
+        console.error('Update membership failed:', error);
+        res.status(500).json({ error: 'Failed to update member role.' });
+      }
+    }
+  );
 
   app.post('/api/guides', requireAuth, requireTenantMembership, async (req: AuthRequest, res) => {
     if (!hasPermission(req.activeMembership, 'trips.update')) {
@@ -1738,8 +2357,7 @@ async function startServer() {
       const [updatedSettings] = await db
         .update(organizationSettings)
         .set({
-          seatReserveMode:
-            seatReserveMode === 'on_approved' ? 'on_approved' : 'on_pending',
+          seatReserveMode: seatReserveMode === 'on_approved' ? 'on_approved' : 'on_pending',
           bookingAutoApprove: Boolean(bookingAutoApprove),
           publicPageEnabled: publicPageEnabled !== false,
           cancellationPolicyText:
@@ -1771,7 +2389,6 @@ async function startServer() {
     }
   });
 
-  // Update Travel Company Profile (Name, Slug, Logo, Contact, Bio/Policy)
   app.patch(
     '/api/organization/profile',
     requireAuth,
@@ -1803,6 +2420,9 @@ async function startServer() {
       const contactEmail = String(req.body?.contactEmail ?? currentOrg.contactEmail).trim();
       const rawPhone = String(req.body?.contactPhone ?? currentOrg.contactPhone).trim();
       const contactPhone = rawPhone ? normalizePhoneNumber(rawPhone) : currentOrg.contactPhone;
+      const city = String(req.body?.city ?? currentOrg.city).trim();
+      const country = String(req.body?.country ?? currentOrg.country).trim();
+      const socialLinks = String(req.body?.socialLinks ?? currentOrg.socialLinks).trim();
       const defaultCurrency =
         req.body?.defaultCurrency === 'USD'
           ? 'USD'
@@ -1827,6 +2447,9 @@ async function startServer() {
             logoUrl,
             contactEmail,
             contactPhone,
+            city,
+            country,
+            socialLinks,
             defaultCurrency,
             defaultLanguage,
             updatedAt: new Date(),
@@ -1867,7 +2490,6 @@ async function startServer() {
     }
   );
 
-  // Safe Dry-Run Import Validator Endpoint (Rule 4 — Never touches KURDIA systems)
   app.post(
     '/api/dry-run-import',
     requireAuth,
@@ -1884,7 +2506,7 @@ async function startServer() {
   );
 
   // ==========================================================================
-  // 4. PLATFORM SUPER ADMIN ENDPOINTS (Separated & Audited — Rule 9.1)
+  // 5. PLATFORM SUPER ADMIN COMMERCIAL CONSOLE ENDPOINTS (Sections 15, 18, 20-26)
   // ==========================================================================
 
   app.get('/api/platform/overview', requireAuth, async (req: AuthRequest, res) => {
@@ -1895,22 +2517,369 @@ async function startServer() {
     }
 
     try {
-      const [allOrgs, allSubs, allPlans, allLogs] = await Promise.all([
+      const [
+        allOrgs,
+        allSubs,
+        allPlans,
+        allInvoices,
+        allSubPayments,
+        allPaymentMethods,
+        allLeads,
+        allCoupons,
+        allTickets,
+        allLogs,
+      ] = await Promise.all([
         db.select().from(organizations).orderBy(desc(organizations.createdAt)),
         db.select().from(subscriptions),
         db.select().from(subscriptionPlans),
+        db.select().from(subscriptionInvoices).orderBy(desc(subscriptionInvoices.createdAt)),
+        db.select().from(subscriptionPayments).orderBy(desc(subscriptionPayments.createdAt)),
+        db.select().from(platformPaymentMethods),
+        db.select().from(salesLeads).orderBy(desc(salesLeads.createdAt)),
+        db.select().from(coupons).orderBy(desc(coupons.createdAt)),
+        db.select().from(supportTickets).orderBy(desc(supportTickets.createdAt)),
         db.select().from(activityLogs).orderBy(desc(activityLogs.createdAt)).limit(50),
       ]);
 
+      // Calculate accurate platform commercial revenue separated by IQD and USD (Section 24)
+      let collectedIqd = 0;
+      let collectedUsd = 0;
+      let pendingIqd = 0;
+      let pendingUsd = 0;
+
+      for (const sp of allSubPayments) {
+        if (sp.status === 'approved') {
+          if (sp.currency === 'USD') collectedUsd += sp.amount;
+          else collectedIqd += sp.amount;
+        } else if (sp.status === 'pending_verification') {
+          if (sp.currency === 'USD') pendingUsd += sp.amount;
+          else pendingIqd += sp.amount;
+        }
+      }
+
+      // Calculate MRR / ARR from active subscriptions separated by organization currency
+      const planMap = new Map(allPlans.map((p) => [p.id, p]));
+      const orgMap = new Map(allOrgs.map((o) => [o.id, o]));
+      let mrrIqd = 0;
+      let mrrUsd = 0;
+
+      for (const s of allSubs) {
+        if (s.status !== 'active') continue;
+        const p = planMap.get(s.planId);
+        const o = orgMap.get(s.organizationId);
+        if (!p || !o) continue;
+        if (o.defaultCurrency === 'USD') {
+          mrrUsd +=
+            s.billingCycle === 'annual' ? Math.round(p.proposedAnnualUsd / 12) : p.proposedMonthlyUsd;
+        } else {
+          mrrIqd +=
+            s.billingCycle === 'annual' ? Math.round(p.proposedAnnualIqd / 12) : p.proposedMonthlyIqd;
+        }
+      }
+
       res.json({
+        commercialMetrics: {
+          collectedIqd,
+          collectedUsd,
+          pendingIqd,
+          pendingUsd,
+          mrrIqd,
+          mrrUsd,
+          arrIqd: mrrIqd * 12,
+          arrUsd: mrrUsd * 12,
+          totalCompanies: allOrgs.length,
+          activeSubscribers: allSubs.filter((s) => s.status === 'active').length,
+          trialCompanies: allSubs.filter((s) => s.status === 'trialing').length,
+          expiredSubscriptions: allSubs.filter((s) => s.status === 'expired').length,
+          suspendedCompanies: allOrgs.filter((o) => o.status === 'suspended').length,
+          totalLeads: allLeads.length,
+          convertedLeads: allLeads.filter((l) => l.status === 'converted').length,
+        },
         organizations: allOrgs,
         subscriptions: allSubs,
         plans: allPlans,
+        invoices: allInvoices,
+        subscriptionPayments: allSubPayments,
+        paymentMethods: allPaymentMethods,
+        salesLeads: allLeads,
+        coupons: allCoupons,
+        supportTickets: allTickets,
         auditLogs: allLogs,
       });
     } catch (error) {
       console.error('Platform overview failed:', error);
       res.status(500).json({ error: 'Failed to load Platform Super Admin console.' });
+    }
+  });
+
+  // Super Admin: Verify Manual Subscription Payment & Extend Subscription Exactly Once (Section 20)
+  app.post(
+    '/api/platform/subscription-payments/:id/verify',
+    requireAuth,
+    async (req: AuthRequest, res) => {
+      if (!req.dbUser?.isSuperAdmin) {
+        return res.status(403).json({ error: 'Forbidden: Platform Super Admin access required.' });
+      }
+
+      const paymentId = Number(req.params.id);
+      const decision = req.body?.decision === 'rejected' ? 'rejected' : 'approved';
+      const reviewNotes = String(req.body?.reviewNotes || '').trim();
+      const client = await pool.connect();
+
+      try {
+        await client.query('BEGIN');
+
+        const payRes = await client.query(
+          'SELECT * FROM subscription_payments WHERE id = $1 FOR UPDATE',
+          [paymentId]
+        );
+        if (payRes.rowCount === 0) {
+          await client.query('ROLLBACK');
+          return res.status(404).json({ error: 'Subscription payment not found.' });
+        }
+
+        const payRow = payRes.rows[0];
+        if (payRow.extension_applied && decision === 'approved') {
+          await client.query('ROLLBACK');
+          return res.status(409).json({
+            error: 'This subscription payment was already verified and applied once.',
+          });
+        }
+
+        const orgId = Number(payRow.organization_id);
+        const now = new Date();
+
+        if (decision === 'approved') {
+          const daysToAdd = payRow.billing_cycle === 'annual' ? 365 : 30;
+          const nextEnd = new Date(now.getTime() + daysToAdd * 24 * 60 * 60 * 1000);
+
+          const planRes = await client.query(
+            'SELECT * FROM subscription_plans WHERE code = $1 LIMIT 1',
+            [payRow.plan_code]
+          );
+          const planId = planRes.rows[0]?.id || 1;
+
+          await client.query(
+            `UPDATE subscription_payments
+             SET status = 'approved', extension_applied = true, reviewed_by_uid = $1, review_notes = $2, reviewed_at = NOW()
+             WHERE id = $3`,
+            [req.user!.uid, reviewNotes || 'Approved by Super Admin', paymentId]
+          );
+
+          await client.query(
+            `UPDATE subscription_invoices
+             SET status = 'paid', paid_at = NOW()
+             WHERE id = $1`,
+            [payRow.invoice_id]
+          );
+
+          await client.query(
+            `UPDATE subscriptions
+             SET plan_id = $1, plan_code = $2, status = 'active', billing_cycle = $3,
+                 end_date = $4, renewal_date = $4, verified_by_uid = $5, updated_at = NOW()
+             WHERE organization_id = $6`,
+            [planId, payRow.plan_code, payRow.billing_cycle, nextEnd, req.user!.uid, orgId]
+          );
+
+          await client.query(
+            `UPDATE organizations SET status = 'active', updated_at = NOW() WHERE id = $1`,
+            [orgId]
+          );
+
+          await client.query(
+            `INSERT INTO notifications (
+              organization_id, type, title_ku, title_ar, title_en, body_ku, body_ar, body_en, entity_type, entity_id
+            ) VALUES ($1, 'subscription_alert', $2, $3, $4, $5, $6, $7, 'subscription', $8)`,
+            [
+              orgId,
+              'ئیشتراکی کۆمپانیاکەت چالاک کرا!',
+              'تم تفعيل اشتراك شركتك بنجاح!',
+              'Your Company Subscription Is Now Active!',
+              `پارەدانی پسوولەی (${payRow.transaction_reference}) پەسەند کرا و پلانی ${payRow.plan_code} چالاک کرا.`,
+              `تم تأكيد الدفعة (${payRow.transaction_reference}) وتفعيل باقة ${payRow.plan_code}.`,
+              `Payment (${payRow.transaction_reference}) verified and ${payRow.plan_code} plan activated.`,
+              paymentId,
+            ]
+          );
+        } else {
+          await client.query(
+            `UPDATE subscription_payments
+             SET status = 'rejected', reviewed_by_uid = $1, review_notes = $2, reviewed_at = NOW()
+             WHERE id = $3`,
+            [req.user!.uid, reviewNotes || 'Rejected by Super Admin', paymentId]
+          );
+          await client.query(
+            `UPDATE subscription_invoices SET status = 'unpaid' WHERE id = $1`,
+            [payRow.invoice_id]
+          );
+        }
+
+        await client.query(
+          `INSERT INTO activity_logs (organization_id, actor_uid, actor_email, action, entity_type, entity_id, details)
+           VALUES ($1, $2, $3, $4, 'subscription_payment', $5, $6)`,
+          [
+            orgId,
+            req.user!.uid,
+            req.dbUser!.email,
+            `platform.subscription_payment_${decision}`,
+            String(paymentId),
+            `Super Admin ${decision} subscription payment #${paymentId} (${payRow.amount} ${payRow.currency})`,
+          ]
+        );
+
+        await client.query('COMMIT');
+        res.json({ ok: true, decision });
+      } catch (error) {
+        await client.query('ROLLBACK');
+        console.error('Verify subscription payment failed:', error);
+        res.status(500).json({ error: 'Failed to verify subscription payment.' });
+      } finally {
+        client.release();
+      }
+    }
+  );
+
+  // Super Admin: Send Subscription Renewal Reminder Notification (Section 22)
+  app.post(
+    '/api/platform/organizations/:id/send-reminder',
+    requireAuth,
+    async (req: AuthRequest, res) => {
+      if (!req.dbUser?.isSuperAdmin) {
+        return res.status(403).json({ error: 'Forbidden: Platform Super Admin access required.' });
+      }
+      const orgId = Number(req.params.id);
+      try {
+        await db.insert(notifications).values({
+          organizationId: orgId,
+          recipientUid: 'all',
+          type: 'subscription_alert',
+          titleKu: 'ئاگادارکردنەوەی نوێکردنەوەی ئیشتراک',
+          titleAr: 'تذكير بتجديد اشتراك الشركة',
+          titleEn: 'Subscription Renewal Reminder',
+          bodyKu:
+            'ئیشتراکی کۆمپانیاکەت لە RAVAN نزیکەیە بەسەر بچێت. بۆ بەردەوامبوون لە بەکارهێنانی سیستەم، تکایە ئیشتراکەکەت نوێ بکەرەوە.',
+          bodyAr:
+            'اشتراك شركتك في RAVAN يقترب من الانتهاء. للاستمرار في استخدام النظام، يرجى تجديد الاشتراك.',
+          bodyEn:
+            'Your company subscription in RAVAN is approaching expiration. Please renew your subscription to maintain uninterrupted service.',
+          entityType: 'subscription',
+          entityId: orgId,
+        });
+        res.json({ ok: true });
+      } catch (error) {
+        console.error('Send renewal reminder failed:', error);
+        res.status(500).json({ error: 'Failed to send renewal reminder.' });
+      }
+    }
+  );
+
+  // Super Admin: Manage Sales CRM Leads (Section 18)
+  app.post('/api/platform/leads', requireAuth, async (req: AuthRequest, res) => {
+    if (!req.dbUser?.isSuperAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Platform Super Admin access required.' });
+    }
+    try {
+      const [created] = await db
+        .insert(salesLeads)
+        .values({
+          contactName: String(req.body?.contactName || '').trim(),
+          companyName: String(req.body?.companyName || '').trim(),
+          phone: normalizePhoneNumber(String(req.body?.phone || '')),
+          email: String(req.body?.email || '').trim(),
+          city: String(req.body?.city || 'Erbil').trim(),
+          interestedPlan: String(req.body?.interestedPlan || 'professional').trim(),
+          status: String(req.body?.status || 'new').trim(),
+          estimatedDealValue: Number(req.body?.estimatedDealValue || 50000),
+          currency: req.body?.currency === 'USD' ? 'USD' : 'IQD',
+          notes: String(req.body?.notes || '').trim(),
+          nextFollowUpDate: String(req.body?.nextFollowUpDate || '').trim(),
+        })
+        .returning();
+      res.status(201).json({ lead: created });
+    } catch (error) {
+      console.error('Create lead failed:', error);
+      res.status(500).json({ error: 'Failed to create sales lead.' });
+    }
+  });
+
+  app.patch('/api/platform/leads/:id', requireAuth, async (req: AuthRequest, res) => {
+    if (!req.dbUser?.isSuperAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Platform Super Admin access required.' });
+    }
+    const leadId = Number(req.params.id);
+    try {
+      const [updated] = await db
+        .update(salesLeads)
+        .set({
+          status: String(req.body?.status || 'contacted'),
+          notes: req.body?.notes !== undefined ? String(req.body.notes) : undefined,
+          updatedAt: new Date(),
+        })
+        .where(eq(salesLeads.id, leadId))
+        .returning();
+      res.json({ lead: updated });
+    } catch (error) {
+      console.error('Update lead failed:', error);
+      res.status(500).json({ error: 'Failed to update lead.' });
+    }
+  });
+
+  // Super Admin: Create Coupon (Section 23)
+  app.post('/api/platform/coupons', requireAuth, async (req: AuthRequest, res) => {
+    if (!req.dbUser?.isSuperAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Platform Super Admin access required.' });
+    }
+    try {
+      const code = String(req.body?.code || '').trim().toUpperCase();
+      const discountType = req.body?.discountType === 'fixed' ? 'fixed' : 'percentage';
+      const discountValue = Number(req.body?.discountValue || 10);
+      const currency = req.body?.currency === 'USD' ? 'USD' : 'IQD';
+      const maxUses = Number(req.body?.maxUses || 50);
+      const expiresAt = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+
+      const [created] = await db
+        .insert(coupons)
+        .values({
+          code,
+          discountType,
+          discountValue,
+          currency,
+          maxUses,
+          expiresAt,
+          isActive: true,
+        })
+        .returning();
+      res.status(201).json({ coupon: created });
+    } catch (error) {
+      console.error('Create coupon failed:', error);
+      res.status(400).json({ error: 'Failed to create coupon (code may already exist).' });
+    }
+  });
+
+  // Super Admin: Respond to Support Ticket (Section 26)
+  app.patch('/api/platform/support-tickets/:id', requireAuth, async (req: AuthRequest, res) => {
+    if (!req.dbUser?.isSuperAdmin) {
+      return res.status(403).json({ error: 'Forbidden: Platform Super Admin access required.' });
+    }
+    const ticketId = Number(req.params.id);
+    const status = String(req.body?.status || 'resolved');
+    const adminResponse = String(req.body?.adminResponse || '').trim();
+
+    try {
+      const [updated] = await db
+        .update(supportTickets)
+        .set({
+          status,
+          adminResponse,
+          respondedByUid: req.user!.uid,
+          updatedAt: new Date(),
+        })
+        .where(eq(supportTickets.id, ticketId))
+        .returning();
+      res.json({ ticket: updated });
+    } catch (error) {
+      console.error('Respond to support ticket failed:', error);
+      res.status(500).json({ error: 'Failed to update support ticket.' });
     }
   });
 
@@ -1970,7 +2939,7 @@ async function startServer() {
   );
 
   // ==========================================================================
-  // 5. VITE DEV MIDDLEWARE / PRODUCTION STATIC ASSETS
+  // 6. VITE DEV MIDDLEWARE / PRODUCTION STATIC ASSETS
   // ==========================================================================
 
   const httpServer = createHttpServer(app);

@@ -36,12 +36,16 @@ export const organizations = pgTable(
     logoUrl: text('logo_url').notNull().default(''),
     contactEmail: text('contact_email').notNull().default(''),
     contactPhone: text('contact_phone').notNull().default(''),
+    country: text('country').notNull().default('Iraq / Kurdistan Region'),
+    city: text('city').notNull().default('Erbil'),
+    socialLinks: text('social_links').notNull().default(''),
     defaultLanguage: text('default_language').notNull().default('ku'),
     supportedLanguages: text('supported_languages').notNull().default('ku,ar,en'),
     timezone: text('timezone').notNull().default('Asia/Baghdad'),
     defaultCurrency: text('default_currency').notNull().default('IQD'),
     status: text('status').notNull().default('trialing'), // 'trialing' | 'active' | 'suspended' | 'archived'
     isDemo: boolean('is_demo').notNull().default(false),
+    referralCodeUsed: text('referral_code_used').notNull().default(''),
     createdByUid: text('created_by_uid').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -118,18 +122,23 @@ export const invites = pgTable(
   (table) => [index('invites_org_idx').on(table.organizationId)]
 );
 
-// 6. Subscription Plans (Platform SaaS Catalog - Marked as Unvalidated Draft Proposals)
+// 6. Subscription Plans (Platform SaaS Catalog - Editable by Super Admin)
 export const subscriptionPlans = pgTable('subscription_plans', {
   id: serial('id').primaryKey(),
   code: text('code').notNull().unique(), // 'starter' | 'professional' | 'business' | 'enterprise'
   nameKu: text('name_ku').notNull(),
   nameAr: text('name_ar').notNull(),
   nameEn: text('name_en').notNull(),
+  descriptionKu: text('description_ku').notNull().default(''),
   proposedMonthlyIqd: integer('proposed_monthly_iqd').notNull().default(25000),
+  proposedAnnualIqd: integer('proposed_annual_iqd').notNull().default(250000),
   proposedMonthlyUsd: integer('proposed_monthly_usd').notNull().default(20),
+  proposedAnnualUsd: integer('proposed_annual_usd').notNull().default(200),
+  trialDays: integer('trial_days').notNull().default(14),
   maxMembers: integer('max_members').notNull().default(5),
   maxActiveTrips: integer('max_active_trips').notNull().default(15),
   maxMonthlyBookings: integer('max_monthly_bookings').notNull().default(200),
+  supportLevel: text('support_level').notNull().default('Standard Support'),
   isProposalOnly: boolean('is_proposal_only').notNull().default(true),
   isActive: boolean('is_active').notNull().default(true),
   createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
@@ -148,7 +157,7 @@ export const subscriptions = pgTable(
       .notNull()
       .references(() => subscriptionPlans.id),
     planCode: text('plan_code').notNull().default('professional'),
-    status: text('status').notNull().default('trialing'), // 'trialing' | 'active' | 'past_due' | 'expired' | 'cancelled' | 'suspended'
+    status: text('status').notNull().default('trialing'), // 'trialing' | 'pending_payment' | 'active' | 'expiring_soon' | 'expired' | 'suspended' | 'cancelled'
     billingCycle: text('billing_cycle').notNull().default('monthly'), // 'monthly' | 'annual'
     startDate: timestamp('start_date', { withTimezone: true }).notNull().defaultNow(),
     endDate: timestamp('end_date', { withTimezone: true }).notNull(),
@@ -202,7 +211,18 @@ export const vehicles = pgTable(
   (table) => [index('vehicles_org_idx').on(table.organizationId)]
 );
 
-// 10. Trips (Multilingual, Capacity-Controlled Tenant Catalog)
+export interface TripPrepChecklist {
+  reservationsConfirmed?: boolean;
+  manifestReviewed?: boolean;
+  paymentsVerified?: boolean;
+  transportConfirmed?: boolean;
+  guideConfirmed?: boolean;
+  equipmentChecked?: boolean;
+  departureInfoSent?: boolean;
+  readyForDeparture?: boolean;
+}
+
+// 10. Trips (Multilingual, Capacity-Controlled Tenant Catalog + Execution State)
 export const trips = pgTable(
   'trips',
   {
@@ -211,6 +231,7 @@ export const trips = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
     code: text('code').notNull(),
+    category: text('category').notNull().default('nature'), // 'nature' | 'mountain' | 'camping' | 'cultural' | 'historical' | 'city' | 'vip' | 'family'
     status: text('status').notNull().default('draft'), // 'draft' | 'published' | 'full' | 'cancelled' | 'completed' | 'archived'
     titleKu: text('title_ku').notNull(),
     titleAr: text('title_ar').notNull().default(''),
@@ -222,7 +243,8 @@ export const trips = pgTable(
     departureLocation: text('departure_location').notNull().default('Erbil'),
     departureAt: timestamp('departure_at', { withTimezone: true }).notNull(),
     returnAt: timestamp('return_at', { withTimezone: true }).notNull(),
-    priceAmount: integer('price_amount').notNull(), // Integer units (IQD or USD)
+    priceAmount: integer('price_amount').notNull(), // Adult price in integer units (IQD or USD)
+    childPriceAmount: integer('child_price_amount').notNull().default(0),
     currency: text('currency').notNull().default('IQD'), // 'IQD' | 'USD'
     totalCapacity: integer('total_capacity').notNull(),
     reservedSeats: integer('reserved_seats').notNull().default(0),
@@ -233,6 +255,11 @@ export const trips = pgTable(
     coverImageUrl: text('cover_image_url').notNull().default(''),
     guideId: integer('guide_id').references(() => guides.id, { onDelete: 'set null' }),
     vehicleId: integer('vehicle_id').references(() => vehicles.id, { onDelete: 'set null' }),
+    preparationChecklist: jsonb('preparation_checklist')
+      .$type<TripPrepChecklist>()
+      .notNull()
+      .default({}),
+    operationalNotes: text('operational_notes').notNull().default(''),
     createdByUid: text('created_by_uid').notNull(),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
     updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
@@ -310,6 +337,7 @@ export const bookings = pgTable(
     currency: text('currency').notNull().default('IQD'), // 'IQD' | 'USD'
     seatsReserved: boolean('seats_reserved').notNull().default(true),
     pickupPointName: text('pickup_point_name').notNull().default(''),
+    installmentDueDate: text('installment_due_date').notNull().default(''),
     customerNotes: text('customer_notes').notNull().default(''),
     internalNotes: text('internal_notes').notNull().default(''),
     idempotencyKey: text('idempotency_key').notNull(),
@@ -324,7 +352,7 @@ export const bookings = pgTable(
   ]
 );
 
-// 14. Booking Passengers (Separated Manifest Records)
+// 14. Booking Passengers (Separated Manifest Records + Live Attendance Tracking)
 export const bookingPassengers = pgTable(
   'booking_passengers',
   {
@@ -342,6 +370,9 @@ export const bookingPassengers = pgTable(
     phone: text('phone').notNull().default(''),
     ageGroup: text('age_group').notNull().default('adult'), // 'adult' | 'child' | 'infant'
     specialRequirements: text('special_requirements').notNull().default(''),
+    attendanceStatus: text('attendance_status').notNull().default('pending'), // 'pending' | 'present' | 'no_show'
+    attendanceNotes: text('attendance_notes').notNull().default(''),
+    checkedInAt: timestamp('checked_in_at', { withTimezone: true }),
     createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index('passengers_org_trip_idx').on(table.organizationId, table.tripId)]
@@ -452,7 +483,7 @@ export const notifications = pgTable(
       .notNull()
       .references(() => organizations.id, { onDelete: 'cascade' }),
     recipientUid: text('recipient_uid').notNull().default('all'),
-    type: text('type').notNull(), // 'booking_created' | 'booking_status' | 'payment_received' | 'trip_status' | 'subscription_alert'
+    type: text('type').notNull(), // 'booking_created' | 'booking_status' | 'payment_received' | 'trip_status' | 'subscription_alert' | 'support_reply'
     titleKu: text('title_ku').notNull(),
     titleAr: text('title_ar').notNull().default(''),
     titleEn: text('title_en').notNull().default(''),
@@ -502,6 +533,140 @@ export const idempotencyKeys = pgTable(
   (table) => [uniqueIndex('idemp_org_key_idx').on(table.organizationId, table.key)]
 );
 
+// ============================================================================
+// COMMERCIAL SAAS PLATFORM TABLES (Subscriptions, Invoices, CRM, Coupons, Support)
+// ============================================================================
+
+// 22. Platform Manual Payment Methods (Configured by Super Admin)
+export const platformPaymentMethods = pgTable('platform_payment_methods', {
+  id: serial('id').primaryKey(),
+  methodName: text('method_name').notNull(), // e.g. 'Bank Transfer (RT Bank / Cihan)' | 'Cash Office Delivery'
+  accountHolder: text('account_holder').notNull().default('RAVAN Platform Administration'),
+  accountDetails: text('account_details').notNull().default(''),
+  instructions: text('instructions').notNull().default(''),
+  supportedCurrency: text('supported_currency').notNull().default('IQD'), // 'IQD' | 'USD'
+  isEnabled: boolean('is_enabled').notNull().default(true),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// 23. Subscription Invoices (Section 21 — Issued per renewal/upgrade request)
+export const subscriptionInvoices = pgTable(
+  'subscription_invoices',
+  {
+    id: serial('id').primaryKey(),
+    invoiceNumber: text('invoice_number').notNull().unique(),
+    organizationId: integer('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    planCode: text('plan_code').notNull(),
+    billingCycle: text('billing_cycle').notNull().default('monthly'), // 'monthly' | 'annual'
+    originalAmount: integer('original_amount').notNull(),
+    discountAmount: integer('discount_amount').notNull().default(0),
+    finalAmount: integer('final_amount').notNull(),
+    currency: text('currency').notNull().default('IQD'), // 'IQD' | 'USD'
+    couponCode: text('coupon_code').notNull().default(''),
+    paymentMethod: text('payment_method').notNull().default('manual_bank_transfer'),
+    status: text('status').notNull().default('unpaid'), // 'unpaid' | 'pending_verification' | 'paid' | 'cancelled' | 'refunded'
+    issueDate: timestamp('issue_date', { withTimezone: true }).notNull().defaultNow(),
+    dueDate: timestamp('due_date', { withTimezone: true }).notNull(),
+    paidAt: timestamp('paid_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('sub_invoices_org_idx').on(table.organizationId)]
+);
+
+// 24. Subscription Payments (Section 20 — Manual Payment Review & Single-Extension Guard)
+export const subscriptionPayments = pgTable(
+  'subscription_payments',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    invoiceId: integer('invoice_id')
+      .notNull()
+      .references(() => subscriptionInvoices.id, { onDelete: 'cascade' }),
+    planCode: text('plan_code').notNull(),
+    billingCycle: text('billing_cycle').notNull().default('monthly'),
+    amount: integer('amount').notNull(),
+    currency: text('currency').notNull().default('IQD'), // 'IQD' | 'USD'
+    paymentMethod: text('payment_method').notNull().default('manual_bank_transfer'),
+    transactionReference: text('transaction_reference').notNull(),
+    receiptNotes: text('receipt_notes').notNull().default(''),
+    status: text('status').notNull().default('pending_verification'), // 'pending_verification' | 'approved' | 'rejected'
+    extensionApplied: boolean('extension_applied').notNull().default(false), // Prevents duplicate subscription extension!
+    submittedByUid: text('submitted_by_uid').notNull(),
+    reviewedByUid: text('reviewed_by_uid').notNull().default(''),
+    reviewNotes: text('review_notes').notNull().default(''),
+    reviewedAt: timestamp('reviewed_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('sub_payments_org_idx').on(table.organizationId)]
+);
+
+// 25. Sales CRM Leads (Section 18 — Super Admin Lead & Demo Pipeline)
+export const salesLeads = pgTable('sales_leads', {
+  id: serial('id').primaryKey(),
+  contactName: text('contact_name').notNull(),
+  companyName: text('company_name').notNull(),
+  phone: text('phone').notNull(),
+  email: text('email').notNull().default(''),
+  city: text('city').notNull().default('Erbil'),
+  country: text('country').notNull().default('Iraq / Kurdistan Region'),
+  businessSize: text('business_size').notNull().default('5-15 staff'),
+  leadSource: text('lead_source').notNull().default('Website Demo Request'),
+  interestedPlan: text('interested_plan').notNull().default('professional'),
+  status: text('status').notNull().default('new'), // 'new' | 'contacted' | 'interested' | 'demo_scheduled' | 'trial_started' | 'negotiation' | 'converted' | 'lost'
+  estimatedDealValue: integer('estimated_deal_value').notNull().default(50000),
+  currency: text('currency').notNull().default('IQD'), // 'IQD' | 'USD'
+  notes: text('notes').notNull().default(''),
+  nextFollowUpDate: text('next_follow_up_date').notNull().default(''),
+  convertedOrgId: integer('converted_org_id'),
+  createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
+// 26. Coupons & Promotional Discounts (Section 23)
+export const coupons = pgTable(
+  'coupons',
+  {
+    id: serial('id').primaryKey(),
+    code: text('code').notNull().unique(),
+    discountType: text('discount_type').notNull().default('percentage'), // 'percentage' | 'fixed'
+    discountValue: integer('discount_value').notNull(),
+    currency: text('currency').notNull().default('IQD'), // 'IQD' | 'USD'
+    maxUses: integer('max_uses').notNull().default(50),
+    usedCount: integer('used_count').notNull().default(0),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    isActive: boolean('is_active').notNull().default(true),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [uniqueIndex('coupons_code_idx').on(table.code)]
+);
+
+// 27. Customer Support Tickets (Section 26 — Tenant-Isolated Helpdesk)
+export const supportTickets = pgTable(
+  'support_tickets',
+  {
+    id: serial('id').primaryKey(),
+    organizationId: integer('organization_id')
+      .notNull()
+      .references(() => organizations.id, { onDelete: 'cascade' }),
+    createdByUid: text('created_by_uid').notNull(),
+    createdByEmail: text('created_by_email').notNull().default(''),
+    subject: text('subject').notNull(),
+    category: text('category').notNull().default('billing'), // 'billing' | 'technical' | 'operations' | 'feature_request'
+    description: text('description').notNull(),
+    priority: text('priority').notNull().default('normal'), // 'low' | 'normal' | 'high' | 'urgent'
+    status: text('status').notNull().default('open'), // 'open' | 'in_progress' | 'waiting_for_customer' | 'resolved' | 'closed'
+    adminResponse: text('admin_response').notNull().default(''),
+    respondedByUid: text('responded_by_uid').notNull().default(''),
+    createdAt: timestamp('created_at', { withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp('updated_at', { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index('support_tickets_org_idx').on(table.organizationId)]
+);
+
 // Drizzle Relations
 export const organizationsRelations = relations(organizations, ({ many, one }) => ({
   settings: one(organizationSettings, {
@@ -518,4 +683,6 @@ export const organizationsRelations = relations(organizations, ({ many, one }) =
   bookings: many(bookings),
   payments: many(payments),
   expenses: many(expenses),
+  invoices: many(subscriptionInvoices),
+  supportTickets: many(supportTickets),
 }));

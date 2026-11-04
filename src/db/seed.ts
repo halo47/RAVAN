@@ -4,6 +4,7 @@ import {
   bookingPassengers,
   bookings,
   bookingStatusHistory,
+  coupons,
   customers,
   expenseCategories,
   expenses,
@@ -13,8 +14,13 @@ import {
   organizations,
   organizationSettings,
   payments,
+  platformPaymentMethods,
+  salesLeads,
+  subscriptionInvoices,
+  subscriptionPayments,
   subscriptionPlans,
   subscriptions,
+  supportTickets,
   tripPickupPoints,
   trips,
   users,
@@ -23,6 +29,59 @@ import {
 import { eq } from 'drizzle-orm';
 
 export async function ensureSubscriptionPlans() {
+  // Ensure platform manual payment instructions exist
+  const existingMethods = await db.select().from(platformPaymentMethods);
+  if (existingMethods.length === 0) {
+    await db.insert(platformPaymentMethods).values([
+      {
+        methodName: 'حەواڵەی بانکی دەستی (Manual Bank Transfer)',
+        accountHolder: 'RAVAN Platform Administration',
+        accountDetails: 'Configure official bank IBAN in Super Admin Console',
+        instructions:
+          'تکایە دوای ناردنی بڕی پارە، ژمارەی پسوولەی حەواڵە (Transaction Reference) لە فۆڕمی نوێکردنەوەدا تۆمار بکە بۆ پەسەندکردن لەلایەن سووپەر ئەدمین.',
+        supportedCurrency: 'IQD',
+        isEnabled: true,
+      },
+      {
+        methodName: 'پارەدانی نەقدی لە ئۆفیس (Cash Office Delivery)',
+        accountHolder: 'RAVAN Sales & Billing Desk',
+        accountDetails: 'Erbil Main Office — Commercial SaaS Desk',
+        instructions:
+          'پارەدان بە وەسڵی فەرمی و تۆمارکردنی ژمارەی وەسڵ لە پانێڵی کۆمپانیا.',
+        supportedCurrency: 'USD',
+        isEnabled: true,
+      },
+    ]);
+  }
+
+  // Ensure initial promotional coupons exist
+  const existingCoupons = await db.select().from(coupons);
+  if (existingCoupons.length === 0) {
+    const in90Days = new Date(Date.now() + 90 * 24 * 60 * 60 * 1000);
+    await db.insert(coupons).values([
+      {
+        code: 'RAVAN20',
+        discountType: 'percentage',
+        discountValue: 20,
+        currency: 'IQD',
+        maxUses: 100,
+        usedCount: 0,
+        expiresAt: in90Days,
+        isActive: true,
+      },
+      {
+        code: 'WELCOME10K',
+        discountType: 'fixed',
+        discountValue: 10000,
+        currency: 'IQD',
+        maxUses: 50,
+        usedCount: 0,
+        expiresAt: in90Days,
+        isActive: true,
+      },
+    ]);
+  }
+
   const existing = await db.select().from(subscriptionPlans);
   if (existing.length > 0) {
     return existing;
@@ -36,11 +95,16 @@ export async function ensureSubscriptionPlans() {
         nameKu: 'ستارتەر (پێشنیاری ناڕەسمی)',
         nameAr: 'المبتدئ (مقترح غير رسمي)',
         nameEn: 'Starter (Unvalidated Proposal)',
+        descriptionKu: 'گونجاو بۆ نووسینگە و گرووپە گەشتیارییە نوێیەکان',
         proposedMonthlyIqd: 25000,
+        proposedAnnualIqd: 250000,
         proposedMonthlyUsd: 20,
+        proposedAnnualUsd: 200,
+        trialDays: 14,
         maxMembers: 4,
         maxActiveTrips: 8,
         maxMonthlyBookings: 100,
+        supportLevel: 'Standard Support',
         isProposalOnly: true,
         isActive: true,
       },
@@ -49,11 +113,16 @@ export async function ensureSubscriptionPlans() {
         nameKu: 'پڕۆفیشناڵ (پێشنیاری ناڕەسمی)',
         nameAr: 'المحترف (مقترح غير رسمي)',
         nameEn: 'Professional (Unvalidated Proposal)',
+        descriptionKu: 'گونجاو بۆ کۆمپانیا گەشتیارییە چالاکەکان لەگەڵ ژمێریاریی تەواو',
         proposedMonthlyIqd: 50000,
+        proposedAnnualIqd: 500000,
         proposedMonthlyUsd: 40,
+        proposedAnnualUsd: 400,
+        trialDays: 14,
         maxMembers: 12,
         maxActiveTrips: 30,
         maxMonthlyBookings: 500,
+        supportLevel: 'Priority Support',
         isProposalOnly: true,
         isActive: true,
       },
@@ -62,11 +131,16 @@ export async function ensureSubscriptionPlans() {
         nameKu: 'بزنس (پێشنیاری ناڕەسمی)',
         nameAr: 'الأعمال (مقترح غير رسمي)',
         nameEn: 'Business (Unvalidated Proposal)',
+        descriptionKu: 'بۆ کۆمپانیا گەورەکان کە تیم و گەشتی زۆریان هەیە',
         proposedMonthlyIqd: 100000,
+        proposedAnnualIqd: 1000000,
         proposedMonthlyUsd: 80,
+        proposedAnnualUsd: 800,
+        trialDays: 14,
         maxMembers: 30,
         maxActiveTrips: 100,
         maxMonthlyBookings: 2000,
+        supportLevel: 'Dedicated Account Support',
         isProposalOnly: true,
         isActive: true,
       },
@@ -75,11 +149,16 @@ export async function ensureSubscriptionPlans() {
         nameKu: 'ئینتەرپرایز (پێشنیاری ناڕەسمی)',
         nameAr: 'المؤسسات (مقترح غير رسمي)',
         nameEn: 'Enterprise (Unvalidated Proposal)',
+        descriptionKu: 'پلانی تایبەت بە دامەزراوە گەشتیارییە فرە-لقەکان',
         proposedMonthlyIqd: 200000,
+        proposedAnnualIqd: 2000000,
         proposedMonthlyUsd: 160,
+        proposedAnnualUsd: 1600,
+        trialDays: 30,
         maxMembers: 100,
         maxActiveTrips: 500,
         maxMonthlyBookings: 10000,
+        supportLevel: '24/7 SLA Support',
         isProposalOnly: true,
         isActive: true,
       },
@@ -92,7 +171,7 @@ export async function ensureSubscriptionPlans() {
 /**
  * Seeds two isolated demo tenants ("RAVAN Demo Travel" & "Zagros Horizon Tours")
  * for the authenticated developer/owner so multi-tenant isolation, RBAC, capacity,
- * and IQD/USD accounting can be tested immediately. Zero KURDIA data is used.
+ * trip execution, and IQD/USD accounting can be tested immediately. Zero KURDIA data is used.
  */
 export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSelect) {
   const plans = await ensureSubscriptionPlans();
@@ -105,6 +184,45 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     .set({ isSuperAdmin: true, updatedAt: new Date() })
     .where(eq(users.id, userRecord.id));
 
+  // Ensure sample Sales CRM leads exist for Super Admin
+  const existingLeads = await db.select().from(salesLeads);
+  if (existingLeads.length === 0) {
+    await db.insert(salesLeads).values([
+      {
+        contactName: 'دڵشاد مەحموود',
+        companyName: 'کۆمپانیای هەوارگە بۆ گەشتوگوزار (DEMO LEAD)',
+        phone: '+9647504112233',
+        email: 'dilshad@hawarga-demo.local',
+        city: 'Erbil',
+        country: 'Iraq / Kurdistan Region',
+        businessSize: '10-20 staff',
+        leadSource: 'Website Demo Request',
+        interestedPlan: 'business',
+        status: 'demo_scheduled',
+        estimatedDealValue: 100000,
+        currency: 'IQD',
+        notes: 'داوای دیمۆی سیستەمی کردووە بۆ بەڕێوەبردنی گەشتەکانی هاوینە.',
+        nextFollowUpDate: '2026-11-10',
+      },
+      {
+        contactName: 'ڕێبوار عەلی',
+        companyName: 'نەورۆز تراڤڵ (DEMO LEAD)',
+        phone: '+9647708119900',
+        email: 'rebwar@nawroz-demo.local',
+        city: 'Sulaymaniyah',
+        country: 'Iraq / Kurdistan Region',
+        businessSize: '5-10 staff',
+        leadSource: 'Referral',
+        interestedPlan: 'professional',
+        status: 'interested',
+        estimatedDealValue: 50000,
+        currency: 'IQD',
+        notes: 'گرنگی بە لینکی تایبەتی ناونوسینی هەر گەشتێک دەدات.',
+        nextFollowUpDate: '2026-11-12',
+      },
+    ]);
+  }
+
   // Check if RAVAN Demo Travel already exists
   const existingDemo = await db
     .select()
@@ -113,7 +231,6 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     .limit(1);
 
   if (existingDemo.length > 0) {
-    // Ensure current user has active owner membership on existing demo tenants
     const allOrgs = await db.select().from(organizations);
     for (const org of allOrgs) {
       if (org.isDemo) {
@@ -148,6 +265,8 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       legalName: 'RAVAN Demo Travel Agency LLC',
       contactEmail: 'demo@ravan-travel.local',
       contactPhone: '+9647501112233',
+      country: 'Iraq / Kurdistan Region',
+      city: 'Erbil',
       defaultLanguage: 'ku',
       supportedLanguages: 'ku,ar,en',
       timezone: 'Asia/Baghdad',
@@ -180,6 +299,57 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     verifiedByUid: userRecord.uid,
   });
 
+  // Seed a paid subscription invoice for Tenant A
+  const [invA] = await db
+    .insert(subscriptionInvoices)
+    .values({
+      invoiceNumber: 'INV-RVN-2026-001',
+      organizationId: orgA.id,
+      planCode: proPlan.code,
+      billingCycle: 'monthly',
+      originalAmount: 50000,
+      discountAmount: 0,
+      finalAmount: 50000,
+      currency: 'IQD',
+      paymentMethod: 'manual_bank_transfer',
+      status: 'paid',
+      issueDate: now,
+      dueDate: in7Days,
+      paidAt: now,
+    })
+    .returning();
+
+  await db.insert(subscriptionPayments).values({
+    organizationId: orgA.id,
+    invoiceId: invA.id,
+    planCode: proPlan.code,
+    billingCycle: 'monthly',
+    amount: 50000,
+    currency: 'IQD',
+    paymentMethod: 'manual_bank_transfer',
+    transactionReference: 'BNK-PILOT-1001',
+    receiptNotes: 'Initial verified subscription payment (DEMO)',
+    status: 'approved',
+    extensionApplied: true,
+    submittedByUid: userRecord.uid,
+    reviewedByUid: userRecord.uid,
+    reviewNotes: 'Verified by Platform Super Admin',
+    reviewedAt: now,
+  });
+
+  await db.insert(supportTickets).values({
+    organizationId: orgA.id,
+    createdByUid: userRecord.uid,
+    createdByEmail: userRecord.email,
+    subject: 'چۆنیەتی زیادکردنی ڕێبەری دووەم بۆ گەشتی چۆمان؟',
+    category: 'operations',
+    description: 'دەمانەوێت بزانین چۆن لە بەشی ئامادەکاریی گەشتدا ئامادەبوونی بەشداربووان تۆمار دەکرێت.',
+    priority: 'normal',
+    status: 'resolved',
+    adminResponse: 'لە تابی "ئامادەکاری و جێبەجێکردنی گەشت" دەتوانیت ڕاستەوخۆ ئامادەبووی هەر سەرنشینێک (Present / No-Show) دیاری بکەیت.',
+    respondedByUid: userRecord.uid,
+  });
+
   await db.insert(memberships).values({
     organizationId: orgA.id,
     userId: userRecord.id,
@@ -188,7 +358,6 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     status: 'active',
   });
 
-  // Guides & Vehicles for Tenant A
   const [guideA] = await db
     .insert(guides)
     .values({
@@ -215,24 +384,27 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     })
     .returning();
 
-  // Create 2 Trips for Tenant A (1 in IQD, 1 in USD to demonstrate strict currency separation)
   const [tripIqd] = await db
     .insert(trips)
     .values({
       organizationId: orgA.id,
       code: 'RVN-CHM-01',
+      category: 'mountain',
       status: 'published',
       titleKu: 'گەشتی شاخەوانیی چۆمان و پرژێ (DEMO)',
       titleAr: 'رحلة جبال جومان وبرجي (DEMO)',
       titleEn: 'Choman & Przhe Alpine Expedition (DEMO)',
-      descriptionKu: 'گەشتێکی ٢ ڕۆژە بۆ ناوچە فێنکەکانی باڵەکایەتی و تاڤگەی پرژێ بە خزمەتگوزاریی تەواو.',
+      descriptionKu:
+        'گەشتێکی ٢ ڕۆژە بۆ ناوچە فێنکەکانی باڵەکایەتی و تاڤگەی پرژێ بە خزمەتگوزاریی تەواو.',
       descriptionAr: 'رحلة لمدة يومين إلى مرتفعات بالكايتي وشلالات برجي شاملة النقل والإقامة.',
-      descriptionEn: '2-day guided alpine tour to Choman and Przhe waterfalls including transport and meals.',
+      descriptionEn:
+        '2-day guided alpine tour to Choman and Przhe waterfalls including transport and meals.',
       destination: 'Choman / Balakayati',
       departureLocation: 'Erbil — Shanadar Park',
       departureAt: in7Days,
       returnAt: in9Days,
       priceAmount: 65000,
+      childPriceAmount: 45000,
       currency: 'IQD',
       totalCapacity: 24,
       reservedSeats: 5,
@@ -243,6 +415,17 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       coverImageUrl: '/images/choman.svg',
       guideId: guideA.id,
       vehicleId: vehicleA.id,
+      preparationChecklist: {
+        reservationsConfirmed: true,
+        manifestReviewed: true,
+        paymentsVerified: true,
+        transportConfirmed: true,
+        guideConfirmed: true,
+        equipmentChecked: false,
+        departureInfoSent: false,
+        readyForDeparture: false,
+      },
+      operationalNotes: 'پێویستە ٣٠ خولەک پێش دەرچوون هەموو بەشداربووان لە پارکی شانەدەر ئامادە بن.',
       createdByUid: userRecord.uid,
     })
     .returning();
@@ -262,6 +445,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     .values({
       organizationId: orgA.id,
       code: 'RVN-IST-02',
+      category: 'cultural',
       status: 'published',
       titleKu: 'گەشتی خێزانیی ئیستانبوڵ و بۆسفۆر (DEMO)',
       titleAr: 'رحلة إسطنبول والبوسفور العائلية (DEMO)',
@@ -274,6 +458,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       departureAt: in14Days,
       returnAt: in18Days,
       priceAmount: 480,
+      childPriceAmount: 350,
       currency: 'USD',
       totalCapacity: 20,
       reservedSeats: 2,
@@ -287,7 +472,6 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     })
     .returning();
 
-  // Customers for Tenant A
   const [cust1] = await db
     .insert(customers)
     .values({
@@ -314,7 +498,6 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     })
     .returning();
 
-  // Booking 1 (IQD)
   const [booking1] = await db
     .insert(bookings)
     .values({
@@ -330,6 +513,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       currency: 'IQD',
       seatsReserved: true,
       pickupPointName: 'هەولێر — بەردەم پارکی شانەدەر',
+      installmentDueDate: '2026-11-10',
       customerNotes: 'پێویستمان بە شوێنی پێشەوەی پاس هەیە',
       internalNotes: '١٢٥،٠٠٠ دیناری ماوە پێش بەڕێکەوتن',
       idempotencyKey: 'seed-demo-booking-1',
@@ -345,6 +529,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       fullName: 'ئارام کامەران',
       phone: '+9647502223344',
       ageGroup: 'adult',
+      attendanceStatus: 'present',
     },
     {
       organizationId: orgA.id,
@@ -353,6 +538,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       fullName: 'ژینۆ کامەران',
       phone: '+9647502223344',
       ageGroup: 'adult',
+      attendanceStatus: 'present',
     },
   ]);
 
@@ -379,7 +565,6 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     receivedByUid: userRecord.uid,
   });
 
-  // Booking 2 (USD)
   const [booking2] = await db
     .insert(bookings)
     .values({
@@ -416,7 +601,6 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     receivedByUid: userRecord.uid,
   });
 
-  // Expenses for Tenant A
   const [expCat] = await db
     .insert(expenseCategories)
     .values({
@@ -469,7 +653,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     entityId: booking1.id,
   });
 
-  // 2. Create Tenant B: Zagros Horizon Tours (To verify multi-tenant isolation)
+  // 2. Create Tenant B: Zagros Horizon Tours
   const [orgB] = await db
     .insert(organizations)
     .values({
@@ -478,6 +662,8 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       legalName: 'Zagros Horizon Tourism Co.',
       contactEmail: 'info@zagros-demo.local',
       contactPhone: '+9647709998877',
+      country: 'Iraq / Kurdistan Region',
+      city: 'Sulaymaniyah',
       defaultLanguage: 'ku',
       supportedLanguages: 'ku,ar,en',
       timezone: 'Asia/Baghdad',
@@ -521,11 +707,13 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
   await db.insert(trips).values({
     organizationId: orgB.id,
     code: 'ZGR-DUK-01',
+    category: 'nature',
     status: 'published',
     titleKu: 'گەشتی دەریاچەی دوکان و سلێمانی (Tenant B DEMO)',
     titleAr: 'رحلة بحيرة دوكان والسليمانية (Tenant B DEMO)',
     titleEn: 'Dukan Lake & Sulaymaniyah Tour (Tenant B DEMO)',
-    descriptionKu: 'گەشتی تایبەت بە کۆمپانیای دووەم بۆ تاقیکردنەوەی جیاکردنەوەی داتا (Tenant Isolation).',
+    descriptionKu:
+      'گەشتی تایبەت بە کۆمپانیای دووەم بۆ تاقیکردنەوەی جیاکردنەوەی داتا (Tenant Isolation).',
     descriptionAr: 'رحلة خاصة بالشركة الثانية لاختبار عزل البيانات.',
     descriptionEn: 'Isolated trip belonging strictly to Tenant B for multi-tenancy verification.',
     destination: 'Dukan Lake',

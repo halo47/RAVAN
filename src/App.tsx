@@ -13,16 +13,25 @@ import { formatBaghdadDateOnly, formatBaghdadDateTime } from './lib/dates.ts';
 import { hasPermission, Permission, Role } from './lib/permissions.ts';
 import { PWAInstallButton } from './components/PWAInstallButton.tsx';
 import { OfflineIndicator } from './components/OfflineIndicator.tsx';
+import { TripOperationsModal } from './components/TripOperationsModal.tsx';
+import { SubscriptionPortal } from './components/SubscriptionPortal.tsx';
+import { ReportsAndSupportView } from './components/ReportsAndSupportView.tsx';
+import { SuperAdminConsole } from './components/SuperAdminConsole.tsx';
+import { PublicSaaSMarketingSection } from './components/PublicSaaSMarketingSection.tsx';
+import { CompanyPublicPage } from './components/CompanyPublicPage.tsx';
 import {
   ArrowLeft,
+  BarChart3,
   Bell,
   Building2,
   Calendar,
   Check,
   CheckCircle2,
+  ClipboardCheck,
   Clock,
   Compass,
   Copy,
+  CreditCard,
   ExternalLink,
   FileCheck2,
   Globe,
@@ -56,6 +65,8 @@ type WorkspaceTab =
   | 'customers'
   | 'finance'
   | 'team'
+  | 'subscription'
+  | 'reports'
   | 'notifications'
   | 'settings'
   | 'super-admin';
@@ -133,7 +144,9 @@ export default function App() {
     guides: any[];
     vehicles: any[];
     pickupPoints: any[];
-  }>({ trips: [], guides: [], vehicles: [], pickupPoints: [] });
+    passengers?: any[];
+    bookings?: any[];
+  }>({ trips: [], guides: [], vehicles: [], pickupPoints: [], passengers: [], bookings: [] });
   const [bookingsData, setBookingsData] = useState<{
     bookings: any[];
     customers: any[];
@@ -149,12 +162,8 @@ export default function App() {
     guides: any[];
     vehicles: any[];
   }>({ members: [], invites: [], guides: [], vehicles: [] });
-  const [platformData, setPlatformData] = useState<{
-    organizations: any[];
-    subscriptions: any[];
-    plans: any[];
-    auditLogs: any[];
-  } | null>(null);
+  const [platformData, setPlatformData] = useState<any | null>(null);
+  const [operationsTripId, setOperationsTripId] = useState<number | null>(null);
 
   // Single-Trip Public Page State (Strictly Isolated to 1 Trip)
   const [publicTrips, setPublicTrips] = useState<any[]>([]);
@@ -1865,6 +1874,28 @@ export default function App() {
     );
   }
 
+  // Dedicated Company Public Page (?org=SLUG)
+  if (publicOrgFilter && !selectedPublicTripCode) {
+    return (
+      <CompanyPublicPage
+        organization={selectedPublicOrganization}
+        trips={publicTrips}
+        locale={locale}
+        onSelectTrip={(code) => openDedicatedTripPage(code)}
+        onExitPreview={
+          firebaseUser
+            ? () => {
+                setPublicOrgFilter('');
+                const url = new URL(window.location.href);
+                url.searchParams.delete('org');
+                window.history.pushState({}, '', url.toString());
+              }
+            : undefined
+        }
+      />
+    );
+  }
+
   // ===========================================================================
   // AUTHENTICATED MULTI-TENANT COMPANY WORKSPACE
   // ===========================================================================
@@ -1969,8 +2000,8 @@ export default function App() {
             <span>پشکنینی هەژمار...</span>
           </div>
         ) : !firebaseUser ? (
-          /* Luxury Dark Sign-In Hero Screen */
-          <div className="flex-1 max-w-5xl w-full mx-auto px-6 py-12 flex flex-col justify-center">
+          /* Luxury Dark Sign-In Hero Screen + Commercial SaaS Plans & Demo Request */
+          <div className="flex-1 max-w-6xl w-full mx-auto px-6 py-12 flex flex-col justify-center">
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -2043,6 +2074,13 @@ export default function App() {
                 </div>
               </div>
             </motion.div>
+
+            <PublicSaaSMarketingSection
+              locale={locale}
+              onSignIn={handleGoogleSignIn}
+              onOpenTripLink={openDedicatedTripPage}
+              onMessage={setBannerMessage}
+            />
           </div>
         ) : memberships.length === 0 ? (
           /* Organization Onboarding & Demo Tenant Seeder */
@@ -2219,6 +2257,8 @@ export default function App() {
                       { id: 'customers', label: t.navCustomers, icon: Users },
                       { id: 'finance', label: t.navFinance, icon: Wallet },
                       { id: 'team', label: t.navTeam, icon: Building2 },
+                      { id: 'subscription', label: 'بەشداری و پسووڵەکان', icon: CreditCard },
+                      { id: 'reports', label: 'ڕاپۆرت و پاڵپشتی', icon: BarChart3 },
                       { id: 'notifications', label: t.navNotifications, icon: Bell },
                       { id: 'settings', label: t.navProfile, icon: Settings },
                     ] as const
@@ -2278,6 +2318,21 @@ export default function App() {
                   <span>TZ: {activeOrg?.timezone || 'Asia/Baghdad'}</span>
                   <span className="text-[#C8A76A]">{activeOrg?.defaultCurrency || 'IQD'}</span>
                 </div>
+                {activeOrg?.slug && (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPublicOrgFilter(activeOrg.slug);
+                      const url = new URL(window.location.href);
+                      url.searchParams.set('org', activeOrg.slug);
+                      window.history.pushState({}, '', url.toString());
+                    }}
+                    className="ravan-btn-secondary w-full px-3 py-2 rounded-xl text-xs flex items-center justify-center gap-1.5 text-[#F4F7FB]"
+                  >
+                    <Globe className="w-3.5 h-3.5 text-[#C8A76A]" />
+                    <span>پەڕەی گشتیی کۆمپانیا</span>
+                  </button>
+                )}
                 <button
                   type="button"
                   onClick={handleSeedDemo}
@@ -2305,6 +2360,8 @@ export default function App() {
                     {activeTab === 'customers' && t.navCustomers}
                     {activeTab === 'finance' && t.navFinance}
                     {activeTab === 'team' && t.navTeam}
+                    {activeTab === 'subscription' && 'پلانی بەشداری و پسووڵەکانی کۆمپانیا'}
+                    {activeTab === 'reports' && 'ڕاپۆرتی گشتی و سەنتەری پاڵپشتی'}
                     {activeTab === 'notifications' && t.navNotifications}
                     {activeTab === 'settings' && t.navProfile}
                     {activeTab === 'super-admin' && t.navSuperAdmin}
@@ -2405,9 +2462,12 @@ export default function App() {
                     transition={{ duration: 0.3, ease: EASE_OUT_EXPO }}
                     className="space-y-8"
                   >
-                    {/* 4 Operational KPI Strip */}
+                    {/* 4 Operational KPI Strip (Clickable to open respective sections) */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
-                      <div className="ravan-panel rounded-2xl p-5 space-y-2">
+                      <div
+                        onClick={() => setActiveTab('trips')}
+                        className="ravan-panel ravan-card-interactive rounded-2xl p-5 space-y-2 cursor-pointer"
+                      >
                         <div className="flex items-center justify-between text-xs text-[#9BA9BC]">
                           <span>{t.kpiActiveTrips}</span>
                           <Compass className="w-4 h-4 text-[#C8A76A]" />
@@ -2416,7 +2476,10 @@ export default function App() {
                           {dashboardData.kpis.activeTripsCount}
                         </div>
                       </div>
-                      <div className="ravan-panel rounded-2xl p-5 space-y-2">
+                      <div
+                        onClick={() => setActiveTab('bookings')}
+                        className="ravan-panel ravan-card-interactive rounded-2xl p-5 space-y-2 cursor-pointer"
+                      >
                         <div className="flex items-center justify-between text-xs text-[#9BA9BC]">
                           <span>{t.kpiTotalBookings}</span>
                           <Ticket className="w-4 h-4 text-[#547DA8]" />
@@ -2425,7 +2488,10 @@ export default function App() {
                           {dashboardData.kpis.totalBookingsCount}
                         </div>
                       </div>
-                      <div className="ravan-panel rounded-2xl p-5 space-y-2">
+                      <div
+                        onClick={() => setActiveTab('bookings')}
+                        className="ravan-panel ravan-card-interactive rounded-2xl p-5 space-y-2 cursor-pointer"
+                      >
                         <div className="flex items-center justify-between text-xs text-[#9BA9BC]">
                           <span>{t.kpiPassengers}</span>
                           <Users className="w-4 h-4 text-emerald-400" />
@@ -2434,7 +2500,10 @@ export default function App() {
                           {dashboardData.kpis.totalPassengers}
                         </div>
                       </div>
-                      <div className="ravan-panel rounded-2xl p-5 space-y-2">
+                      <div
+                        onClick={() => setActiveTab('bookings')}
+                        className="ravan-panel ravan-card-interactive rounded-2xl p-5 space-y-2 cursor-pointer"
+                      >
                         <div className="flex items-center justify-between text-xs text-[#9BA9BC]">
                           <span>{t.kpiPendingApprovals}</span>
                           <Clock className="w-4 h-4 text-amber-300" />
@@ -2444,6 +2513,90 @@ export default function App() {
                         </div>
                       </div>
                     </div>
+
+                    {/* Interactive 8-Step Company Onboarding Checklist (Section 4) */}
+                    {dashboardData.onboardingChecklist && (() => {
+                      const rawChecklist = dashboardData.onboardingChecklist;
+                      const checklistItems = Array.isArray(rawChecklist)
+                        ? rawChecklist
+                        : [
+                            {
+                              id: 'profileCompleted',
+                              labelKu: 'تەواوکردنی زانیاریی کۆمپانیا',
+                              completed: Boolean(rawChecklist.profileCompleted),
+                            },
+                            {
+                              id: 'logoUploaded',
+                              labelKu: 'دانانی لۆگۆی کۆمپانیا',
+                              completed: Boolean(rawChecklist.logoUploaded),
+                            },
+                            {
+                              id: 'contactConfigured',
+                              labelKu: 'تەلەفۆن و ئیمەیڵی کۆمپانیا',
+                              completed: Boolean(rawChecklist.contactConfigured),
+                            },
+                            {
+                              id: 'staffAdded',
+                              labelKu: 'زیادکردنی ستاف و کارمەندان',
+                              completed: Boolean(rawChecklist.staffAdded),
+                            },
+                            {
+                              id: 'firstTripCreated',
+                              labelKu: 'دروستکردنی یەکەم گەشت',
+                              completed: Boolean(rawChecklist.firstTripCreated),
+                            },
+                            {
+                              id: 'pickupPointsAdded',
+                              labelKu: 'دیاریکردنی شوێنی سواربوون',
+                              completed: Boolean(rawChecklist.pickupPointsAdded),
+                            },
+                            {
+                              id: 'firstTripPublished',
+                              labelKu: 'بڵاوکردنەوەی گەشت و لینک',
+                              completed: Boolean(rawChecklist.firstTripPublished),
+                            },
+                            {
+                              id: 'firstPaymentRecorded',
+                              labelKu: 'تۆمارکردنی یەکەم پارەدان',
+                              completed: Boolean(rawChecklist.firstPaymentRecorded),
+                            },
+                          ];
+                      const doneCount = checklistItems.filter((i: any) => i.completed).length;
+                      return (
+                        <div className="ravan-surface rounded-2xl p-5 space-y-3 text-xs">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <h3 className="font-bold text-[#D4B375] flex items-center gap-2">
+                              <ClipboardCheck className="w-4 h-4" />
+                              <span>
+                                هەنگاوەکانی دامەزراندن و کارپێکردنی کۆمپانیا (Onboarding Checklist)
+                              </span>
+                            </h3>
+                            <span className="font-mono text-[#F4F7FB]">
+                              {doneCount} / {checklistItems.length} تەواوکراوە
+                            </span>
+                          </div>
+                          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5">
+                            {checklistItems.map((step: any) => (
+                              <div
+                                key={step.id}
+                                className={`p-3 rounded-xl border flex items-center gap-2.5 ${
+                                  step.completed
+                                    ? 'bg-emerald-950/30 border-emerald-500/35 text-emerald-200'
+                                    : 'bg-[#070B12]/70 border-white/[0.06] text-[#9BA9BC]'
+                                }`}
+                              >
+                                <CheckCircle2
+                                  className={`w-4 h-4 shrink-0 ${
+                                    step.completed ? 'text-emerald-400' : 'text-white/20'
+                                  }`}
+                                />
+                                <span className="truncate">{step.labelKu}</span>
+                              </div>
+                            ))}
+                          </div>
+                        </div>
+                      );
+                    })()}
 
                     {/* Currency-Separated Financial Ledgers (IQD vs USD — Never Mixed) */}
                     <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
@@ -2824,11 +2977,16 @@ export default function App() {
                                   </div>
                                 </div>
 
-                                {/* Footer Status Controls */}
-                                <div className="px-5 py-3 border-t border-white/[0.06] flex items-center justify-between text-xs">
-                                  <span className="text-[11px] text-[#9BA9BC]">
-                                    دۆخ: <strong className="text-[#F4F7FB]">{tr.status}</strong>
-                                  </span>
+                                {/* Footer Status Controls & Trip Operations Modal Trigger */}
+                                <div className="px-5 py-3 border-t border-white/[0.06] flex flex-wrap items-center justify-between gap-2 text-xs">
+                                  <button
+                                    type="button"
+                                    onClick={() => setOperationsTripId(tr.id)}
+                                    className="px-3 py-1.5 rounded-lg bg-[#101C2E] border border-[#C8A76A]/40 text-[#D4B375] hover:border-[#C8A76A] text-[11px] font-bold flex items-center gap-1.5"
+                                  >
+                                    <ClipboardCheck className="w-3.5 h-3.5" />
+                                    <span>ئامادەکاری و ئامادەبوون</span>
+                                  </button>
                                   <div className="flex items-center gap-2">
                                     {tr.status === 'draft' && can('trips.publish') && (
                                       <button
@@ -3927,7 +4085,45 @@ export default function App() {
                 )}
 
                 {/* ===========================================================
-                    TAB 9: PLATFORM SUPER ADMIN CONSOLE
+                    TAB 8B: COMPANY SUBSCRIPTION & INVOICES PORTAL
+                   =========================================================== */}
+                {activeTab === 'subscription' && (
+                  <motion.div
+                    key="subscription"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.3, ease: EASE_OUT_EXPO }}
+                  >
+                    <SubscriptionPortal
+                      apiFetch={apiFetch}
+                      locale={locale}
+                      onMessage={setBannerMessage}
+                    />
+                  </motion.div>
+                )}
+
+                {/* ===========================================================
+                    TAB 8C: COMPANY REPORTS, CSV EXPORT & SUPPORT TICKETS
+                   =========================================================== */}
+                {activeTab === 'reports' && (
+                  <motion.div
+                    key="reports"
+                    initial={{ opacity: 0, y: 12 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    transition={{ duration: 0.3, ease: EASE_OUT_EXPO }}
+                  >
+                    <ReportsAndSupportView
+                      apiFetch={apiFetch}
+                      locale={locale}
+                      onMessage={setBannerMessage}
+                    />
+                  </motion.div>
+                )}
+
+                {/* ===========================================================
+                    TAB 9: PLATFORM SUPER ADMIN COMMERCIAL CONSOLE
                    =========================================================== */}
                 {activeTab === 'super-admin' && platformData && (
                   <motion.div
@@ -3936,60 +4132,14 @@ export default function App() {
                     animate={{ opacity: 1, y: 0 }}
                     exit={{ opacity: 0, y: -8 }}
                     transition={{ duration: 0.3, ease: EASE_OUT_EXPO }}
-                    className="space-y-8"
                   >
-                    <div className="ravan-panel rounded-2xl p-6 space-y-4">
-                      <h2 className="text-sm font-bold text-[#D4B375]">
-                        کۆمپانیا تۆمارکراوەکانی سەکۆ ({platformData.organizations.length})
-                      </h2>
-                      <div className="overflow-x-auto">
-                        <table className="w-full text-xs">
-                          <thead className="text-[#9BA9BC] border-b border-white/[0.08]">
-                            <tr>
-                              <th className="py-2.5 text-start">ID · ناوی کۆمپانیا</th>
-                              <th className="py-2.5 text-start">Slug · دراو</th>
-                              <th className="py-2.5 text-start">دۆخ</th>
-                              <th className="py-2.5 text-end">کردار</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-white/[0.06]">
-                            {platformData.organizations.map((org) => (
-                              <tr key={org.id}>
-                                <td className="py-3 font-semibold text-[#F4F7FB]">
-                                  #{org.id} · {org.name}
-                                </td>
-                                <td className="py-3 font-mono text-[#9BA9BC]">
-                                  {org.slug} · {org.defaultCurrency}
-                                </td>
-                                <td className="py-3 font-mono uppercase text-[#D4B375]">
-                                  {org.status}
-                                </td>
-                                <td className="py-3 text-end">
-                                  <button
-                                    type="button"
-                                    onClick={async () => {
-                                      const nextStatus =
-                                        org.status === 'suspended' ? 'active' : 'suspended';
-                                      await apiFetch(
-                                        `/api/platform/organizations/${org.id}/status`,
-                                        {
-                                          method: 'PATCH',
-                                          body: JSON.stringify({ status: nextStatus }),
-                                        }
-                                      );
-                                      await loadActiveTabData();
-                                    }}
-                                    className="ravan-btn-secondary px-3 py-1.5 rounded-lg"
-                                  >
-                                    {org.status === 'suspended' ? 'چالاککردنەوە' : 'ڕاگرتن'}
-                                  </button>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      </div>
-                    </div>
+                    <SuperAdminConsole
+                      platformData={platformData}
+                      apiFetch={apiFetch}
+                      locale={locale}
+                      onRefresh={loadActiveTabData}
+                      onMessage={setBannerMessage}
+                    />
                   </motion.div>
                 )}
               </AnimatePresence>
@@ -3999,9 +4149,42 @@ export default function App() {
       </div>
 
       {/* =====================================================================
-          WORKSPACE MODALS (Create Organization, Create Trip, Booking, Customer, Payment, Expense)
+          WORKSPACE MODALS (Trip Operations, Create Organization, Create Trip, Booking, Customer, Payment, Expense)
          ===================================================================== */}
       <AnimatePresence>
+        {operationsTripId !== null && (
+          <TripOperationsModal
+            trip={tripsData.trips.find((t) => t.id === operationsTripId) || {}}
+            guides={tripsData.guides || []}
+            vehicles={tripsData.vehicles || []}
+            passengers={tripsData.passengers || []}
+            bookings={tripsData.bookings || []}
+            locale={locale}
+            onClose={() => setOperationsTripId(null)}
+            onSaveTripDetails={async (tripId, payload) => {
+              await apiFetch(`/api/trips/${tripId}`, {
+                method: 'PATCH',
+                body: JSON.stringify(payload),
+              });
+              await loadActiveTabData();
+              setBannerMessage({
+                type: 'success',
+                text: 'ئامادەکارییەکانی گەشت و ڕێبەر و ئۆتۆمبێل بە سەرکەوتوویی پاشەکەوت کران.',
+              });
+            }}
+            onUpdateAttendance={async (passengerId, attendanceStatus, attendanceNotes) => {
+              await apiFetch(`/api/passengers/${passengerId}/attendance`, {
+                method: 'PATCH',
+                body: JSON.stringify({ attendanceStatus, attendanceNotes }),
+              });
+              await loadActiveTabData();
+              setBannerMessage({
+                type: 'success',
+                text: `ئامادەبوونی گەشتیار گۆڕدرا بۆ (${attendanceStatus}).`,
+              });
+            }}
+          />
+        )}
         {showCreateOrgModal && (
           <motion.div
             initial={{ opacity: 0 }}
