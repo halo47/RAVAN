@@ -1,4 +1,5 @@
 import express from 'express';
+import { createServer as createHttpServer } from 'http';
 import path from 'path';
 import { createServer as createViteServer } from 'vite';
 import { and, desc, eq, inArray } from 'drizzle-orm';
@@ -1972,9 +1973,15 @@ async function startServer() {
   // 5. VITE DEV MIDDLEWARE / PRODUCTION STATIC ASSETS
   // ==========================================================================
 
+  const httpServer = createHttpServer(app);
+
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true, hmr: false, watch: null },
+      server: {
+        middlewareMode: true,
+        hmr: process.env.DISABLE_HMR === 'true' ? false : { server: httpServer },
+        watch: process.env.DISABLE_HMR === 'true' ? null : {},
+      },
       appType: 'spa',
     });
     app.use(vite.middlewares);
@@ -1986,7 +1993,7 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, '0.0.0.0', () => {
+  httpServer.listen(PORT, '0.0.0.0', () => {
     console.log(`RAVAN Server listening on http://0.0.0.0:${PORT}`);
   });
 }
