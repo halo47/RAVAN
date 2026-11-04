@@ -240,6 +240,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       includedServices: 'گواستنەوەی VIP، نانی بەیانی و نیوەڕۆ، ڕێبەری شاخەوانی',
       excludedServices: 'خەرجیی کەسی',
       requirements: 'پێڵاوی شاخەوانی و ناسنامەی فەرمی',
+      coverImageUrl: '/images/choman.svg',
       guideId: guideA.id,
       vehicleId: vehicleA.id,
       createdByUid: userRecord.uid,
@@ -280,6 +281,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
       includedServices: 'تکتی فڕۆکە، هۆتێلی ٤ ئەستێرە، گواستنەوەی فڕۆکەخانە',
       excludedServices: 'ڤیزا و نانی ئێوارە',
       requirements: 'پاسپۆرتی کارا (لانیکەم ٦ مانگ)',
+      coverImageUrl: '/images/istanbul.svg',
       guideId: guideA.id,
       createdByUid: userRecord.uid,
     })
@@ -535,6 +537,7 @@ export async function seedDemoTenantsForUser(userRecord: typeof users.$inferSele
     totalCapacity: 30,
     reservedSeats: 0,
     availableSeats: 30,
+    coverImageUrl: '/images/dukan.svg',
     createdByUid: userRecord.uid,
   });
 

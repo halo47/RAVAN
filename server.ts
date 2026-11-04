@@ -62,7 +62,7 @@ async function startServer() {
   const app = express();
   const PORT = 3000;
 
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   // ==========================================================================
   // 1. PUBLIC CUSTOMER PORTAL ENDPOINTS (Strict Field Allowlist + Rate Limit)
@@ -70,64 +70,129 @@ async function startServer() {
 
   app.get('/api/public/trips', rateLimit(60, 60_000), async (req, res) => {
     try {
-      const orgSlug = typeof req.query.org === 'string' ? req.query.org.trim() : '';
-      const publishedTrips = await db
-        .select({
-          id: trips.id,
-          organizationId: trips.organizationId,
-          code: trips.code,
-          status: trips.status,
-          titleKu: trips.titleKu,
-          titleAr: trips.titleAr,
-          titleEn: trips.titleEn,
-          descriptionKu: trips.descriptionKu,
-          descriptionAr: trips.descriptionAr,
-          descriptionEn: trips.descriptionEn,
-          destination: trips.destination,
-          departureLocation: trips.departureLocation,
-          departureAt: trips.departureAt,
-          returnAt: trips.returnAt,
-          priceAmount: trips.priceAmount,
-          currency: trips.currency,
-          totalCapacity: trips.totalCapacity,
-          availableSeats: trips.availableSeats,
-          includedServices: trips.includedServices,
-          excludedServices: trips.excludedServices,
-          requirements: trips.requirements,
-        })
-        .from(trips)
-        .where(inArray(trips.status, ['published', 'full']))
-        .orderBy(desc(trips.departureAt));
+      const orgSlugParam =
+        typeof req.query.org === 'string' ? req.query.org.trim().toLowerCase() : '';
+      const tripCodeFilter =
+        typeof req.query.code === 'string' ? req.query.code.trim().toUpperCase() : '';
 
-      const allOrgs = await db
-        .select({
-          id: organizations.id,
-          name: organizations.name,
-          slug: organizations.slug,
-          status: organizations.status,
-          isDemo: organizations.isDemo,
-        })
-        .from(organizations);
+      const [publishedTrips, allOrgs, allSettings, allPickupPoints] = await Promise.all([
+        db
+          .select({
+            id: trips.id,
+            organizationId: trips.organizationId,
+            code: trips.code,
+            status: trips.status,
+            titleKu: trips.titleKu,
+            titleAr: trips.titleAr,
+            titleEn: trips.titleEn,
+            descriptionKu: trips.descriptionKu,
+            descriptionAr: trips.descriptionAr,
+            descriptionEn: trips.descriptionEn,
+            destination: trips.destination,
+            departureLocation: trips.departureLocation,
+            departureAt: trips.departureAt,
+            returnAt: trips.returnAt,
+            priceAmount: trips.priceAmount,
+            currency: trips.currency,
+            totalCapacity: trips.totalCapacity,
+            availableSeats: trips.availableSeats,
+            includedServices: trips.includedServices,
+            excludedServices: trips.excludedServices,
+            requirements: trips.requirements,
+            coverImageUrl: trips.coverImageUrl,
+          })
+          .from(trips)
+          .where(inArray(trips.status, ['published', 'full']))
+          .orderBy(desc(trips.departureAt)),
+        db
+          .select({
+            id: organizations.id,
+            name: organizations.name,
+            slug: organizations.slug,
+            legalName: organizations.legalName,
+            logoUrl: organizations.logoUrl,
+            contactEmail: organizations.contactEmail,
+            contactPhone: organizations.contactPhone,
+            status: organizations.status,
+            isDemo: organizations.isDemo,
+          })
+          .from(organizations),
+        db.select().from(organizationSettings),
+        db.select().from(tripPickupPoints),
+      ]);
 
-      const orgMap = new Map(allOrgs.map((o) => [o.id, o]));
+      const settingsMap = new Map(allSettings.map((s) => [s.organizationId, s]));
+      const activeOrgs = allOrgs.filter((o) => {
+        const s = settingsMap.get(o.id);
+        const publicEnabled = s ? s.publicPageEnabled !== false : true;
+        return (o.status === 'active' || o.status === 'trialing') && publicEnabled;
+      });
+      const orgMap = new Map(activeOrgs.map((o) => [o.id, o]));
+
+      // If a tripCodeFilter is provided without orgSlugParam, automatically resolve its organizationSlug
+      // so a trip link NEVER mixes with other companies!
+      let effectiveOrgSlug = orgSlugParam;
+      if (!effectiveOrgSlug && tripCodeFilter) {
+        const matchedTrip = publishedTrips.find(
+          (t) => t.code.toUpperCase() === tripCodeFilter && orgMap.has(t.organizationId)
+        );
+        if (matchedTrip) {
+          effectiveOrgSlug = orgMap.get(matchedTrip.organizationId)?.slug || '';
+        }
+      }
+
+      const publicOrganizations = activeOrgs.map((o) => {
+        const s = settingsMap.get(o.id);
+        const orgTripsCount = publishedTrips.filter((t) => t.organizationId === o.id).length;
+        return {
+          id: o.id,
+          name: o.name,
+          slug: o.slug,
+          legalName: o.legalName,
+          logoUrl: o.logoUrl,
+          contactPhone: o.contactPhone,
+          contactEmail: o.contactEmail,
+          cancellationPolicyText: s?.cancellationPolicyText || '',
+          isDemo: o.isDemo,
+          tripCount: orgTripsCount,
+        };
+      });
+
+      const selectedOrganization = effectiveOrgSlug
+        ? publicOrganizations.find((o) => o.slug.toLowerCase() === effectiveOrgSlug) || null
+        : null;
+
       const filtered = publishedTrips
         .filter((t) => {
           const o = orgMap.get(t.organizationId);
-          if (!o || (o.status !== 'active' && o.status !== 'trialing')) return false;
-          if (orgSlug && o.slug !== orgSlug) return false;
+          if (!o) return false;
+          if (effectiveOrgSlug && o.slug.toLowerCase() !== effectiveOrgSlug) return false;
           return true;
         })
         .map((t) => {
           const o = orgMap.get(t.organizationId)!;
+          const s = settingsMap.get(t.organizationId);
+          const pickups = allPickupPoints.filter((p) => p.tripId === t.id);
           return {
             ...t,
+            coverImageUrl: t.coverImageUrl || '/images/choman.svg',
             organizationName: o.name,
             organizationSlug: o.slug,
+            organizationLegalName: o.legalName,
+            organizationLogoUrl: o.logoUrl,
+            organizationPhone: o.contactPhone,
+            organizationEmail: o.contactEmail,
+            organizationPolicy: s?.cancellationPolicyText || '',
             isDemo: o.isDemo,
+            pickupPoints: pickups,
           };
         });
 
-      res.json({ trips: filtered });
+      res.json({
+        trips: filtered,
+        organizations: publicOrganizations,
+        selectedOrganization,
+      });
     } catch (error) {
       console.error('Public trips query failed:', error);
       res.status(500).json({ error: 'Unable to load public trips at this time.' });
@@ -307,11 +372,33 @@ async function startServer() {
 
       const createdBooking = insertBooking.rows[0];
 
-      await client.query(
-        `INSERT INTO booking_passengers (organization_id, booking_id, trip_id, full_name, phone, age_group)
-         VALUES ($1, $2, $3, $4, $5, 'adult')`,
-        [orgId, createdBooking.id, tripRow.id, input.customerName.trim(), normalizedPhone]
-      );
+      const passengerList =
+        Array.isArray(input.passengers) && input.passengers.length > 0
+          ? input.passengers
+          : [
+              {
+                fullName: input.customerName.trim(),
+                phone: normalizedPhone,
+                ageGroup: 'adult' as const,
+                specialRequirements: '',
+              },
+            ];
+
+      for (const pax of passengerList) {
+        await client.query(
+          `INSERT INTO booking_passengers (organization_id, booking_id, trip_id, full_name, phone, age_group, special_requirements)
+           VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+          [
+            orgId,
+            createdBooking.id,
+            tripRow.id,
+            (pax.fullName || input.customerName).trim(),
+            pax.phone ? normalizePhoneNumber(pax.phone) : normalizedPhone,
+            pax.ageGroup || 'adult',
+            pax.specialRequirements || '',
+          ]
+        );
+      }
 
       if (holdNow) {
         const nextReserved = Number(tripRow.reserved_seats) + input.passengerCount;
@@ -416,6 +503,34 @@ async function startServer() {
     }
   });
 
+  // Update Authenticated User Personal Profile
+  app.patch('/api/me', requireAuth, async (req: AuthRequest, res) => {
+    const fullName = String(req.body?.fullName ?? req.dbUser!.fullName).trim();
+    const rawPhone = String(req.body?.phone ?? req.dbUser!.phone).trim();
+    const phone = rawPhone ? normalizePhoneNumber(rawPhone) : '';
+    const preferredLocale = ['ku', 'ar', 'en'].includes(req.body?.preferredLocale)
+      ? req.body.preferredLocale
+      : req.dbUser!.preferredLocale;
+
+    try {
+      const [updatedUser] = await db
+        .update(users)
+        .set({
+          fullName,
+          phone,
+          preferredLocale,
+          updatedAt: new Date(),
+        })
+        .where(eq(users.id, req.dbUser!.id))
+        .returning();
+
+      res.json({ user: updatedUser });
+    } catch (error) {
+      console.error('PATCH /api/me failed:', error);
+      res.status(500).json({ error: 'Failed to update personal profile.' });
+    }
+  });
+
   // Seed Demo Tenants for Development/Testing (Rule 22)
   app.post('/api/dev/seed', requireAuth, async (req: AuthRequest, res) => {
     try {
@@ -445,6 +560,7 @@ async function startServer() {
           name: data.name.trim(),
           slug: data.slug.trim().toLowerCase(),
           legalName: data.legalName || data.name.trim(),
+          logoUrl: data.logoUrl || '',
           contactEmail: data.contactEmail || req.dbUser!.email,
           contactPhone: normalizePhoneNumber(data.contactPhone),
           defaultLanguage: data.defaultLanguage,
@@ -661,6 +777,7 @@ async function startServer() {
           includedServices: data.includedServices || '',
           excludedServices: data.excludedServices || '',
           requirements: data.requirements || '',
+          coverImageUrl: data.coverImageUrl || '/images/choman.svg',
           guideId: data.guideId || null,
           vehicleId: data.vehicleId || null,
           createdByUid: req.user!.uid,
@@ -721,10 +838,16 @@ async function startServer() {
         return res.status(404).json({ error: 'Trip not found in your organization.' });
       }
 
+      const newCoverImage =
+        typeof req.body?.coverImageUrl === 'string' && req.body.coverImageUrl.trim()
+          ? req.body.coverImageUrl.trim()
+          : existing.coverImageUrl || '/images/choman.svg';
+
       const [updated] = await db
         .update(trips)
         .set({
           status: newStatus || existing.status,
+          coverImageUrl: newCoverImage,
           updatedAt: new Date(),
         })
         .where(and(eq(trips.id, tripId), eq(trips.organizationId, orgId)))
@@ -1647,6 +1770,102 @@ async function startServer() {
     }
   });
 
+  // Update Travel Company Profile (Name, Slug, Logo, Contact, Bio/Policy)
+  app.patch(
+    '/api/organization/profile',
+    requireAuth,
+    requireTenantMembership,
+    async (req: AuthRequest, res) => {
+      if (!hasPermission(req.activeMembership, 'settings.manage')) {
+        return res.status(403).json({ error: 'Forbidden: Missing settings.manage permission' });
+      }
+      const orgId = req.activeOrganizationId!;
+      const [currentOrg] = await db
+        .select()
+        .from(organizations)
+        .where(eq(organizations.id, orgId))
+        .limit(1);
+
+      if (!currentOrg) {
+        return res.status(404).json({ error: 'Organization not found.' });
+      }
+
+      const name = String(req.body?.name ?? currentOrg.name).trim();
+      const rawSlug = String(req.body?.slug ?? currentOrg.slug)
+        .trim()
+        .toLowerCase()
+        .replace(/[^a-z0-9-]+/g, '-')
+        .replace(/^-|-$/g, '');
+      const legalName = String(req.body?.legalName ?? currentOrg.legalName).trim();
+      const logoUrl =
+        typeof req.body?.logoUrl === 'string' ? req.body.logoUrl : currentOrg.logoUrl;
+      const contactEmail = String(req.body?.contactEmail ?? currentOrg.contactEmail).trim();
+      const rawPhone = String(req.body?.contactPhone ?? currentOrg.contactPhone).trim();
+      const contactPhone = rawPhone ? normalizePhoneNumber(rawPhone) : currentOrg.contactPhone;
+      const defaultCurrency =
+        req.body?.defaultCurrency === 'USD'
+          ? 'USD'
+          : req.body?.defaultCurrency === 'IQD'
+          ? 'IQD'
+          : currentOrg.defaultCurrency;
+      const defaultLanguage = ['ku', 'ar', 'en'].includes(req.body?.defaultLanguage)
+        ? req.body.defaultLanguage
+        : currentOrg.defaultLanguage;
+
+      if (!name || !rawSlug) {
+        return res.status(400).json({ error: 'Company name and unique slug are required.' });
+      }
+
+      try {
+        const [updatedOrg] = await db
+          .update(organizations)
+          .set({
+            name,
+            slug: rawSlug,
+            legalName,
+            logoUrl,
+            contactEmail,
+            contactPhone,
+            defaultCurrency,
+            defaultLanguage,
+            updatedAt: new Date(),
+          })
+          .where(eq(organizations.id, orgId))
+          .returning();
+
+        if (typeof req.body?.cancellationPolicyText === 'string') {
+          await db
+            .update(organizationSettings)
+            .set({
+              cancellationPolicyText: req.body.cancellationPolicyText.trim(),
+              updatedAt: new Date(),
+            })
+            .where(eq(organizationSettings.organizationId, orgId));
+        }
+
+        await db.insert(activityLogs).values({
+          organizationId: orgId,
+          actorUid: req.user!.uid,
+          actorEmail: req.dbUser!.email,
+          action: 'organization.profile_updated',
+          entityType: 'organization',
+          entityId: String(orgId),
+          details: `Updated company profile: ${updatedOrg.name} (${updatedOrg.slug})`,
+        });
+
+        res.json({ organization: updatedOrg });
+      } catch (error: any) {
+        console.error('Update organization profile failed:', error);
+        res.status(400).json({
+          error:
+            error?.code === '23505'
+              ? 'ئەم ناونیشانەی لینک (Slug) پێشتر لەلایەن کۆمپانیایەکی ترەوە گیراوە.'
+              : 'Failed to update company profile.',
+        });
+      }
+    }
+  );
+
   // Safe Dry-Run Import Validator Endpoint (Rule 4 — Never touches KURDIA systems)
   app.post(
     '/api/dry-run-import',
@@ -1755,7 +1974,7 @@ async function startServer() {
 
   if (process.env.NODE_ENV !== 'production') {
     const vite = await createViteServer({
-      server: { middlewareMode: true },
+      server: { middlewareMode: true, hmr: false, watch: null },
       appType: 'spa',
     });
     app.use(vite.middlewares);

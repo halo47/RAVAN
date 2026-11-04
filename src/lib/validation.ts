@@ -46,7 +46,8 @@ export const createOrganizationSchema = z.object({
     .min(2)
     .max(60)
     .regex(/^[a-z0-9-]+$/),
-  legalName: z.string().max(120).optional().default(''),
+  legalName: z.string().max(240).optional().default(''),
+  logoUrl: z.string().max(2_000_000).optional().default(''),
   contactEmail: z.string().email().optional().or(z.literal('')).default(''),
   contactPhone: z.string().min(7).max(25),
   defaultLanguage: z.enum(['ku', 'ar', 'en']).default('ku'),
@@ -72,6 +73,7 @@ export const createTripSchema = z.object({
   includedServices: z.string().max(1000).optional().default(''),
   excludedServices: z.string().max(1000).optional().default(''),
   requirements: z.string().max(1000).optional().default(''),
+  coverImageUrl: z.string().max(2_000_000).optional().default('/images/choman.svg'),
   status: z.enum(['draft', 'published', 'full', 'cancelled', 'completed', 'archived']).default('draft'),
   guideId: z.number().int().nullable().optional(),
   vehicleId: z.number().int().nullable().optional(),

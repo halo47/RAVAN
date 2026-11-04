@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none">
+  <defs>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0B192C"/>
+      <stop offset="55%" stop-color="#1E3E62"/>
+      <stop offset="100%" stop-color="#C8A76A"/>
+    </linearGradient>
+    <linearGradient id="water" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#547DA8"/>
+      <stop offset="100%" stop-color="#0A101A"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="url(#sky)"/>
+  <circle cx="920" cy="190" r="78" fill="#F4F7FB" fill-opacity="0.88"/>
+  <circle cx="920" cy="190" r="120" fill="#C8A76A" fill-opacity="0.22"/>
+  <path d="M0 470L210 230L410 410L640 165L890 420L1060 270L1200 410V675H0V470Z" fill="#142438"/>
+  <path d="M210 230L265 280L205 295L165 282L210 230Z" fill="#F4F7FB" fill-opacity="0.75"/>
+  <path d="M640 165L715 250L635 235L575 255L640 165Z" fill="#F4F7FB" fill-opacity="0.85"/>
+  <path d="M0 510L310 320L590 490L860 310L1200 495V675H0V510Z" fill="#0F1A2A"/>
+  <path d="M615 240C630 330 605 420 560 675H685C650 430 655 330 640 240H615Z" fill="url(#water)" fill-opacity="0.85"/>
+  <rect y="560" width="1200" height="115" fill="#0A101A" fill-opacity="0.65"/>
+</svg>

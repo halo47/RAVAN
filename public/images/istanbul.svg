@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 675" fill="none">
+  <defs>
+    <linearGradient id="sunset" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#0A101A"/>
+      <stop offset="50%" stop-color="#1D3557"/>
+      <stop offset="85%" stop-color="#C8A76A"/>
+      <stop offset="100%" stop-color="#142438"/>
+    </linearGradient>
+  </defs>
+  <rect width="1200" height="675" fill="url(#sunset)"/>
+  <circle cx="600" cy="340" r="95" fill="#F4F7FB" fill-opacity="0.82"/>
+  <path d="M0 440H1200V675H0V440Z" fill="#0D1B2A"/>
+  <path d="M120 440V350L130 300L140 350V440H120ZM480 440V320L490 250L500 320V440H480Z" fill="#142438"/>
+  <path d="M220 440C220 355 380 355 380 440H220Z" fill="#142438"/>
+  <path d="M680 440L890 280L1100 440H680Z" stroke="#C8A76A" stroke-width="5" stroke-opacity="0.6"/>
+  <line x1="890" y1="275" x2="890" y2="440" stroke="#C8A76A" stroke-width="8"/>
+  <rect x="460" y="470" width="280" height="8" rx="4" fill="#C8A76A" fill-opacity="0.55"/>
+  <rect x="500" y="495" width="200" height="6" rx="3" fill="#C8A76A" fill-opacity="0.4"/>
+  <rect x="530" y="520" width="140" height="5" rx="2.5" fill="#C8A76A" fill-opacity="0.3"/>
+</svg>
